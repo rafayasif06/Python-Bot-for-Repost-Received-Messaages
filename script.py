@@ -5,6 +5,26 @@ from datetime import datetime
 from playwright.async_api import async_playwright
 
 
+def get_int_input(prompt, valid_options=None):
+    """Gets integer input from the user, ensuring it's valid."""
+    while True:
+        try:
+            user_input = int(input(prompt))
+            if valid_options and user_input not in valid_options:
+                print(f"Invalid choice. Please enter one of {valid_options}.")
+            else:
+                return user_input
+        except ValueError:
+            print("Invalid input. Please enter a number.")
+
+def get_interval_hours():
+    """Gets the time interval in hours (1-5)."""
+    while True:
+        hours = get_int_input("Enter time interval in hours (1-5): ")
+        if 1 <= hours <= 5:
+            return hours
+        print("Please enter a value between 1 and 5 hours.")
+
 def parse_cookies_from_file(file_path):
   """Parse cookies from a tab-separated file."""
   cookies = []
@@ -205,7 +225,7 @@ async def retweet_post(page):
 
 
 async def find_tweets_in_chat(page):
-  """Find received Twitter posts in the chat."""
+  """Find received Twitter posts in the chat that appear after the last 'Done' message."""
   print("Looking for received Twitter posts in the chat...")
 
   # Wait for messages container or chat content to be visible
@@ -214,70 +234,116 @@ async def find_tweets_in_chat(page):
     print("Chat content container found")
     # Give the page a little extra time to render content
     await asyncio.sleep(3)
+    
+    # First find the last "Done" message
+    last_done_element, done_count = await find_done_messages(page)
+    print(f"\nFound {done_count} 'Done' message(s) in this chat")
+    
   except Exception as e:
     print(f"Wait for messages container timed out, continuing anyway: {e}")
-
   # Try multiple strategies to find tweet elements
   post_elements = []
-
+  
+  # Helper function to check if an element comes after the last Done message
+  async def is_after_last_done(element):
+    if not last_done_element:
+      return True  # If no Done message found, include all tweets
+      
+    try:
+      # Get the bounding boxes of both elements
+      last_done_box = await page.evaluate("""
+        (element) => {
+          const rect = element.getBoundingClientRect();
+          return {top: rect.top, bottom: rect.bottom};
+        }
+      """, last_done_element)
+      
+      element_box = await page.evaluate("""
+        (element) => {
+          const rect = element.getBoundingClientRect();
+          return {top: rect.top, bottom: rect.bottom};
+        }
+      """, element)
+      
+      # Compare vertical positions - if element is below the Done message, it appears later
+      return element_box['top'] > last_done_box['bottom']
+    except Exception as e:
+      print(f"Error comparing element positions: {e}")
+      return True  # Include tweet if we can't determine position
+  
   # Strategy 1: Look for received messages with quote tweets
   try:
     # Look for elements with tabindex="0" that are received messages (not buttons)
-    elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] div[role="link"]')
-    post_elements.extend(elements)
-    print(
-      f"Strategy 1 found {len(elements)} received posts")
+    all_elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] div[role="link"]')
+    for element in all_elements:
+      if await is_after_last_done(element):
+        post_elements.append(element)
+    
+    print(f"Strategy 1 found {len(post_elements)} received posts after last Done")
   except Exception as e:
     print(f"Strategy 1 error: {e}")
-
   # Strategy 2: Look for composite messages in received messages
   if not post_elements:
     try:
-      elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] div[data-testid="DMCompositeMessage"] div[role="link"]')
-      post_elements.extend(elements)
-      print(
-        f"Strategy 2 found {len(elements)} received composite messages")
+      all_elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] div[data-testid="DMCompositeMessage"] div[role="link"]')
+      filtered_elements = []
+      for element in all_elements:
+        if await is_after_last_done(element):
+          filtered_elements.append(element)
+      post_elements.extend(filtered_elements)
+      print(f"Strategy 2 found {len(filtered_elements)} received composite messages after last Done")
     except Exception as e:
       print(f"Strategy 2 error: {e}")
-
   # Strategy 3: Look for links within received messages
   if not post_elements:
     try:
-      elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] .r-adacv')
-      post_elements.extend(elements)
-      print(
-        f"Strategy 3 found {len(elements)} posts in received messages")
+      all_elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] .r-adacv')
+      filtered_elements = []
+      for element in all_elements:
+        if await is_after_last_done(element):
+          filtered_elements.append(element)
+      post_elements.extend(filtered_elements)
+      print(f"Strategy 3 found {len(filtered_elements)} posts after last Done")
     except Exception as e:
       print(f"Strategy 3 error: {e}")
 
   # Strategy 4: Look specifically in received message cells
   if not post_elements:
     try:
-      elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] div[data-testid="cellInnerDiv"]')
-      post_elements.extend(elements)
-      print(f"Strategy 4 found {len(elements)} cell elements in received messages")
+      all_elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] div[data-testid="cellInnerDiv"]')
+      filtered_elements = []
+      for element in all_elements:
+        if await is_after_last_done(element):
+          filtered_elements.append(element)
+      post_elements.extend(filtered_elements)
+      print(f"Strategy 4 found {len(filtered_elements)} cell elements after last Done")
     except Exception as e:
       print(f"Strategy 4 error: {e}")
-
   # Strategy 5: Look for links in received messages
   if not post_elements:
     try:
       # Only look within divs that have tabindex="0"
-      elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] div[role="link"]')
-      post_elements.extend(elements)
-      print(f"Strategy 5 found {len(elements)} links in received messages")
+      all_elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] div[role="link"]')
+      filtered_elements = []
+      for element in all_elements:
+        if await is_after_last_done(element):
+          filtered_elements.append(element)
+      post_elements.extend(filtered_elements)
+      print(f"Strategy 5 found {len(filtered_elements)} links after last Done")
     except Exception as e:
       print(f"Strategy 5 error: {e}")
 
   # Strategy 6: Look for tweet text elements in received messages
   try:
     tweet_text_elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] span[data-testid="tweetText"]')
-    print(f"Found {len(tweet_text_elements)} tweet text elements in received messages")
-
-    # If we found tweet text elements but no post elements, try to get the parent posts
+    print(f"Found {len(tweet_text_elements)} tweet text elements in received messages")    # If we found tweet text elements but no post elements, try to get the parent posts
     if not post_elements and tweet_text_elements:
       for tweet_text in tweet_text_elements:
         try:
+          # Skip if the tweet text element is before the last Done message
+          if not await is_after_last_done(tweet_text):
+            continue
+
           # Try to find the parent post element within the received message
           parent = await page.evaluate("""
                     (element) => {
@@ -520,21 +586,26 @@ async def process_chat_tweets(context, page, chat_index):
 
     # Find Twitter posts in the chat
     post_elements = await find_tweets_in_chat(page)
-    print(f"Found {len(post_elements)} tweet(s) in chat {chat_index + 1}")
-
-    # Process each Twitter post
+    print(f"Found {len(post_elements)} tweet(s) in chat {chat_index + 1}")    # Process each Twitter post
     tweets_opened = 0
     tweets_retweeted = 0
     for j, post_element in enumerate(post_elements):
       success = await open_tweet_in_new_tab(context, page, post_element, j + 1)
       if success:
         tweets_opened += 1
-        # Note: We don't have direct feedback on whether the retweet was successful
-        # But we're tracking it in the open_tweet_in_new_tab function with console output
       await asyncio.sleep(2)  # Delay between processing posts
 
-    print(
-      f"Finished processing chat {chat_index + 1} - Opened {tweets_opened} tweet(s)")
+    # Only send "Done" message if we actually processed new tweets
+    if tweets_opened > 0:
+      send_result = await send_done_message(page)
+      if send_result:
+        print("Successfully sent 'Done' message")
+      else:
+        print("Failed to send 'Done' message")
+    else:
+      print("No new tweets processed, skipping 'Done' message")
+
+    print(f"Finished processing chat {chat_index + 1} - Opened {tweets_opened} tweet(s)")
     return tweets_opened
   except Exception as e:
     print(f"Error processing chat {chat_index + 1}: {e}")
@@ -578,144 +649,264 @@ async def find_chat_elements(page):
   return chat_elements
 
 
-async def main():
-  """Main function to run the Twitter automation script."""
+async def send_done_message(page):
+  """Send 'Done' message in the current chat."""
   try:
-    # Launch the browser
-    async with async_playwright() as p:
+    # Wait for a moment to ensure the chat is loaded
+    await asyncio.sleep(2)
+    
+    # Try to find the message input area with various selectors
+    input_selectors = [
+      'div[data-contents="true"][role="textbox"]',
+      'div[contenteditable="true"][role="textbox"]',
+      'div[data-testid="dmComposerTextInput"]'
+    ]
+    
+    input_element = None
+    for selector in input_selectors:
       try:
-        # Launch browser with error handling and fullscreen mode
-        browser = await p.chromium.launch(
-            headless=False,
-            args=[                '--start-maximized',
-                '--disable-gpu',
-                '--no-sandbox',
-                f'--window-size=1550,720',
-                '--window-position=0,0'
-            ]
-        )
-        
-        # Create context with specific viewport settings
-        context = await browser.new_context(
-            viewport={"width": 1550, "height": 720},
-            screen={"width": 1550, "height": 720}
-        )
-        
-        # Set the window state to maximized explicitly
-        default_page = await context.new_page()
-        await default_page.evaluate("() => { window.moveTo(0,0); window.resizeTo(screen.width,screen.height); }")
-        await default_page.close()
-
-        # Load cookies from file
-        try:
-          # Get the path to the cookies.txt file
-          cookies_file_path = os.path.join(os.path.dirname(
-              os.path.abspath(__file__)), 'cookies.txt')
-
-          # Parse all cookies from the file
-          cookies = parse_cookies_from_file(cookies_file_path)
-          print(f"Loaded {len(cookies)} cookies from the file")
-
-          # Add cookies to the context
-          await context.add_cookies(cookies)
-          print("Cookies added to the browser context")
-        except Exception as e:
-          print(f"Error loading or applying cookies: {e}")
-          return
-
-        # Create a new page and navigate to messages
-        page = await context.new_page()
-        try:
-          await page.goto('https://x.com/messages')
-          print("X.com messages page opened with cookies")
-
-          # Wait for page to load with more reliable approach
-          try:
-            # Wait for key elements indicating the page is loaded
-            await page.wait_for_selector('[data-testid="conversation"], div[role="tablist"]',
-                                         timeout=15000, state='visible')
-            print("Messages page loaded successfully")
-          except Exception as e:
-            print(f"Timed out waiting for conversation elements: {e}")
-            print("Will continue anyway")
-            # Take extra time to load if needed
-            await asyncio.sleep(5)
-
-          # Take a screenshot for debugging
-          await page.screenshot(path="messages_page_loaded.png")
-          print("Looking for chat conversations...")
-
-          # Find chat elements to determine how many chats there are
-          initial_chat_elements = await find_chat_elements(page)
-          chat_count = len(initial_chat_elements)
-
-          if chat_count == 0:
-            print("Could not find any chat elements. Trying direct URL approach...")
-            try:
-              # Get first DM by direct URL
-              await page.goto('https://x.com/messages/all')
-              print("Opened direct messages list page")
-              await asyncio.sleep(5)
-              await page.screenshot(path="dm_list_page.png")
-              # Try to find chats in this new page
-              initial_chat_elements = await find_chat_elements(page)
-              chat_count = len(initial_chat_elements)
-            except Exception as e:
-              print(f"Direct messages list approach failed: {e}")
-
-          if chat_count > 0:
-            print(f"Found {chat_count} chats to process")
-            total_tweets_opened = 0
-
-            # Process each chat in sequence by its index
-            for i in range(chat_count):
-              # Go to messages page before each chat
-              if i > 0:  # Not needed for the first chat
-                await page.goto('https://x.com/messages')
-                print("Returned to messages page")
-                await asyncio.sleep(3)  # Give page time to load
-
-              # Process the chat at the current index
-              tweets_opened = await process_chat_tweets(context, page, i)
-              total_tweets_opened += tweets_opened
-
-            print(
-              f"\nProcessing completed: Opened {total_tweets_opened} tweets from {chat_count} chats")
-            print("Each opened tweet was attempted to be retweeted. Check the console logs for details on which tweets were successfully retweeted.")
-          else:
-            print("No chat elements found after all attempts")
-
-          print("Chat and tweet processing completed. Press Ctrl+C to close the browser.")
-
-          # Keep the script running
-          try:
-            # This will keep the script running until interrupted
-            # Keep open for 1 hour (you can adjust this)
-            await asyncio.sleep(3600)
-          except KeyboardInterrupt:
-            print("Closing browser...")
-
-        except Exception as e:
-          print(f"Error in page navigation or processing: {e}")
-      except Exception as e:
-        print(f"Error creating browser context: {e}")
+        input_element = await page.wait_for_selector(selector, timeout=5000)
+        if input_element:
+          print(f"Found message input with selector: {selector}")
+          break
+      except Exception:
+        continue
+    
+    if not input_element:
+      print("Could not find message input area")
+      return False
+    
+    # Type the message
+    await input_element.type("Done")
+    print("Typed 'Done' message")
+    
+    # Find and click the send button
+    try:
+      send_button = await page.wait_for_selector('button[data-testid="dmComposerSendButton"]', timeout=5000)
+      if send_button:
+        await send_button.click()
+        print("Clicked send button")
+        await asyncio.sleep(1)  # Wait for message to send
+        return True
+    except Exception as e:
+      print(f"Error clicking send button: {e}")
+      return False
+      
   except Exception as e:
-    print(f"Critical error in main function: {e}")
+    print(f"Error sending 'Done' message: {e}")
+    return False
 
+
+async def find_done_messages(page):
+  """Find all 'Done' messages in the current chat and return the last one."""
+  try:
+    print("Looking for 'Done' messages in chat...")
+    
+    # Try to find all spans with the exact text "Done"
+    done_messages = await page.query_selector_all('span.css-1jxf684.r-bcqeeo.r-1ttztb7.r-qvutc0.r-poiln3')
+    
+    done_count = 0
+    last_done_element = None
+    
+    # Verify each element has exactly "Done" text and get the last one
+    for msg in done_messages:
+      try:
+        text = await page.evaluate('(element) => element.textContent', msg)
+        if text.strip() == "Done":
+          done_count += 1
+          last_done_element = msg
+      except Exception as e:
+        print(f"Error checking message text: {e}")
+        continue
+    
+    print(f"Found {done_count} 'Done' message(s) in chat")
+    return last_done_element, done_count
+    
+  except Exception as e:
+    print(f"Error finding 'Done' messages: {e}")
+    return None, 0
+
+
+async def run_script():
+    """Main function to run the Twitter automation script."""
+    print("\nHow would you like to start?")
+    print("1 - Single iteration")
+    print("2 - Multiple iterations with time interval")
+    initial_choice = get_int_input("Enter your choice (1-2): ", [1, 2])
+
+    hours = 0
+    if initial_choice == 2:
+        while hours < 1 or hours > 5:
+            hours = get_int_input("Enter time interval in hours (1-5): ")
+            if hours < 1 or hours > 5:
+                print("Please enter a value between 1 and 5 hours.")
+        print(f"\nStarting multiple iterations mode with {hours} hour interval.")
+        print("Press Ctrl+C to pause/stop.")
+
+    try:
+        async with async_playwright() as p:
+            # Launch browser with error handling and fullscreen mode
+            browser = await p.chromium.launch(
+                headless=False,
+                args=['--start-maximized', '--disable-gpu', '--no-sandbox',
+                     '--window-size=1550,720', '--window-position=0,0']
+            )
+
+            # Create context with specific viewport settings
+            context = await browser.new_context(
+                viewport={"width": 1550, "height": 720},
+                screen={"width": 1550, "height": 720}
+            )
+
+            # Initialize first page and maximize window
+            default_page = await context.new_page()
+            await default_page.evaluate("() => { window.moveTo(0,0); window.resizeTo(screen.width,screen.height); }")
+            await default_page.close()
+
+            # Load cookies
+            try:
+                cookies_file_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'cookies.txt')
+                cookies = parse_cookies_from_file(cookies_file_path)
+                await context.add_cookies(cookies)
+                print(f"Loaded {len(cookies)} cookies")
+            except Exception as e:
+                print(f"Error loading cookies: {e}")
+                return            # Create main page
+            page = await context.new_page()
+
+            # Ask for initial execution mode
+            print("\nHow would you like to start?")
+            print("1 - Single iteration")
+            print("2 - Multiple iterations with time interval")
+            initial_choice = get_int_input("Enter your choice (1-2): ", [1, 2])
+
+            if initial_choice == 2:
+                # Get interval in hours for multiple iterations
+                hours = 0
+                while hours < 1 or hours > 5:
+                    hours = get_int_input("Enter time interval in hours (1-5): ")
+                    if hours < 1 or hours > 5:
+                        print("Please enter a value between 1 and 5 hours.")
+                print(f"\nStarting multiple iterations mode with {hours} hour interval.")
+                print("Press Ctrl+C to pause/stop.")
+
+            # Main program loop
+            while True:
+                try:
+                    # Navigate to messages
+                    await page.goto('https://x.com/messages')
+                    print("X.com messages page opened")
+
+                    # Wait for page to load
+                    try:
+                        await page.wait_for_selector('[data-testid="conversation"], div[role="tablist"]',
+                                                   timeout=15000, state='visible')
+                    except Exception as e:
+                        print(f"Timed out waiting for conversations: {e}")
+                        await asyncio.sleep(5)
+
+                    # Find and process chats
+                    initial_chat_elements = await find_chat_elements(page)
+                    chat_count = len(initial_chat_elements)
+
+                    # Process chats if found
+                    if chat_count > 0:
+                        total_tweets_opened = 0
+                        for i in range(chat_count):
+                            if i > 0:
+                                await page.goto('https://x.com/messages')
+                                await asyncio.sleep(3)
+                            tweets_opened = await process_chat_tweets(context, page, i)
+                            total_tweets_opened += tweets_opened                        
+                        jprint(f"\nProcessing completed: {total_tweets_opened} tweets processed from {chat_count} chats")
+                    else:
+                        print("No chats found to process")
+
+                    # For multiple iterations mode, continue with the interval
+                    if initial_choice == 2:
+                        try:
+                            print(f"\nWaiting {hours} hour(s) before next iteration...")
+                            await asyncio.sleep(hours * 3600)
+                            print("\nStarting next iteration...")
+                            continue
+                        except KeyboardInterrupt:
+                            print("\nMultiple iterations mode interrupted.")
+                            print("\nWhat would you like to do?")
+                            print("1 - Resume multiple iterations")
+                            print("2 - Switch to manual mode")
+                            print("3 - Stop and close browser")
+                            
+                            sub_choice = get_int_input("Enter your choice (1-3): ", [1, 2, 3])
+                            
+                            if sub_choice == 1:
+                                print("\nResuming multiple iterations...")
+                                continue
+                            elif sub_choice == 2:
+                                initial_choice = 1  # Switch to manual mode
+                                print("\nSwitched to manual mode.")
+                            else:
+                                print("Closing browser...")
+                                return
+
+                    # For single iteration mode, show the menu
+                    if initial_choice == 1:
+                        print("\nWhat would you like to do next?")
+                    print("1 - Stop and close browser")
+                    print("2 - Continue with another iteration")
+                    print("3 - Switch to automatic repeating mode (1-5 hours interval)")
+                    
+                    choice = get_int_input("Enter your choice (1-3): ", [1, 2, 3])
+                    
+                    if choice == 1:
+                        print("Closing browser...")
+                        return
+                    elif choice == 2:
+                        print("\nStarting another iteration...")
+                        continue
+                    elif choice == 3:
+                        # Get interval in hours
+                        hours = 0
+                        while hours < 1 or hours > 5:
+                            hours = get_int_input("Enter time interval in hours (1-5): ")
+                            if hours < 1 or hours > 5:
+                                print("Please enter a value between 1 and 5 hours.")
+                        
+                        print(f"\nStarting automatic mode with {hours} hour interval.")
+                        print("Press Ctrl+C to pause/stop.")
+                        
+                        try:
+                            while True:
+                                print(f"\nWaiting {hours} hour(s) before next iteration...")
+                                await asyncio.sleep(hours * 3600)
+                                print("\nStarting next iteration...")
+                                await page.goto('https://x.com/messages')
+                        except KeyboardInterrupt:
+                            print("\nAutomatic mode interrupted.")
+                            print("\nWhat would you like to do?")
+                            print("1 - Resume automatic mode")
+                            print("2 - Switch to manual mode")
+                            print("3 - Stop and close browser")
+                            
+                            sub_choice = get_int_input("Enter your choice (1-3): ", [1, 2, 3])
+                            
+                            if sub_choice == 1:
+                                print("\nResuming automatic mode...")
+                                continue
+                            elif sub_choice == 2:
+                                print("\nSwitching to manual mode...")
+                                continue
+                            else:
+                                print("Closing browser...")
+                                return
+
+                except Exception as e:
+                    print(f"Error in iteration: {e}")
+                    choice = get_int_input("\nRetry? (1 for yes, 2 for no): ", [1, 2])
+                    if choice == 2:
+                        return
+
+    except Exception as e:
+        print(f"Critical error: {e}")
 
 if __name__ == "__main__":
-  asyncio.run(main())
-
-
-
-
-
-
-
-
-
-
-
-
-
-# Reposting problem solved
+    asyncio.run(run_script())
