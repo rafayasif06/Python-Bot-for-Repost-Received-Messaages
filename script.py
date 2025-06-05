@@ -336,13 +336,29 @@ async def find_tweets_in_chat(page):
       print(f"Strategy 5 found {len(filtered_elements)} links after last Done")
     except Exception as e:
       print(f"Strategy 5 error: {e}")
-
-  # Strategy 6: Look for tweet text elements in received messages
+  # Strategy 6: Look for any text messages containing tweet URLs
   try:
+    # Look for any message spans
+    text_elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] span')
+    print(f"Found {len(text_elements)} potential text messages")
+
+    # Check each text element for tweet URLs
+    for text_element in text_elements:
+      try:
+        if not await is_after_last_done(text_element):
+          continue
+
+        text_content = await page.evaluate('(element) => element.textContent', text_element)
+        if text_content and re.search(r'https?://(?:www\.)?(?:twitter\.com|x\.com)/[a-zA-Z0-9_]+/status/\d+', text_content):
+          post_elements.append(text_element)
+      except Exception as e:
+        print(f"Error checking text content: {e}")
+
+    print(f"Found {len(post_elements)} messages containing tweet URLs")
+
+    # Also look for tweet text elements as before
     tweet_text_elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] span[data-testid="tweetText"]')
-    # If we found tweet text elements but no post elements, try to get the parent posts
-    print(
-      f"Found {len(tweet_text_elements)} tweet text elements in received messages")
+    print(f"Found {len(tweet_text_elements)} tweet text elements in received messages")
     if not post_elements and tweet_text_elements:
       for tweet_text in tweet_text_elements:
         try:
@@ -602,17 +618,11 @@ async def process_chat_tweets(context, page, chat_index):
       success = await open_tweet_in_new_tab(context, page, post_element, j + 1)
       if success:
         tweets_opened += 1
-      await asyncio.sleep(2)  # Delay between processing posts
-
-    # Only send "Done" message if we actually processed new tweets
+      await asyncio.sleep(2)  # Delay between processing posts    # No need to send "Done" message - user will send it manually
     if tweets_opened > 0:
-      send_result = await send_done_message(page)
-      if send_result:
-        print("Successfully sent 'Done' message")
-      else:
-        print("Failed to send 'Done' message")
+      print("Finished processing tweets - you can now send 'Done' message manually")
     else:
-      print("No new tweets processed, skipping 'Done' message")
+      print("No new tweets processed")
 
     print(
       f"Finished processing chat {chat_index + 1} - Opened {tweets_opened} tweet(s)")
@@ -716,13 +726,11 @@ async def find_done_messages(page):
     done_messages = await page.query_selector_all('span.css-1jxf684.r-bcqeeo.r-1ttztb7.r-qvutc0.r-poiln3')
 
     done_count = 0
-    last_done_element = None
-
-    # Verify each element has exactly "Done" text and get the last one
+    last_done_element = None    # Verify each element has text that matches "done" (case-insensitive) and get the last one
     for msg in done_messages:
       try:
         text = await page.evaluate('(element) => element.textContent', msg)
-        if text.strip() == "Done":
+        if text.strip().lower() == "done":
           done_count += 1
           last_done_element = msg
       except Exception as e:
