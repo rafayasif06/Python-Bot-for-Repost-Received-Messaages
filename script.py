@@ -239,10 +239,9 @@ async def find_tweets_in_chat(page):
     # First find the last "Done" message
     last_done_element, done_count = await find_done_messages(page)
     print(f"\nFound {done_count} 'Done' message(s) in this chat")
-
   except Exception as e:
     print(f"Wait for messages container timed out, continuing anyway: {e}")
-  # Try multiple strategies to find tweet elements
+
   post_elements = []
 
   # Helper function to check if an element comes after the last Done message
@@ -272,275 +271,179 @@ async def find_tweets_in_chat(page):
       print(f"Error comparing element positions: {e}")
       return True  # Include tweet if we can't determine position
 
-  # Strategy 1: Look for received messages with quote tweets
   try:
-    # Look for elements with tabindex="0" that are received messages (not buttons)
-    all_elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] div[role="link"]')
-    for element in all_elements:
-      if await is_after_last_done(element):
-        post_elements.append(element)
-
+    # Target divs with role="link" and specific classnames as mentioned
+    # These are the tweet/post elements shared in chats
+    selector = 'div[role="link"].css-175oi2r.r-adacv.r-1udh08x.r-1867qdf'
+    all_link_elements = await page.query_selector_all(selector)
     print(
-      f"Strategy 1 found {len(post_elements)} received posts after last Done")
-  except Exception as e:
-    print(f"Strategy 1 error: {e}")
-  # Strategy 2: Look for composite messages in received messages
-  if not post_elements:
-    try:
-      all_elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] div[data-testid="DMCompositeMessage"] div[role="link"]')
-      filtered_elements = []
-      for element in all_elements:
-        if await is_after_last_done(element):
-          filtered_elements.append(element)
-      post_elements.extend(filtered_elements)
+      f"Found {len(all_link_elements)} potential tweet links with specific classnames")
+
+    # If none found with the specific class combination, try just role="link" as fallback
+    if len(all_link_elements) == 0:
+      all_link_elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] div[role="link"]')
       print(
-        f"Strategy 2 found {len(filtered_elements)} received composite messages after last Done")
-    except Exception as e:
-      print(f"Strategy 2 error: {e}")
-  # Strategy 3: Look for links within received messages
-  if not post_elements:
-    try:
-      all_elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] .r-adacv')
-      filtered_elements = []
-      for element in all_elements:
-        if await is_after_last_done(element):
-          filtered_elements.append(element)
-      post_elements.extend(filtered_elements)
-      print(f"Strategy 3 found {len(filtered_elements)} posts after last Done")
-    except Exception as e:
-      print(f"Strategy 3 error: {e}")
+        f"Found {len(all_link_elements)} potential tweet links with role=link")
 
-  # Strategy 4: Look specifically in received message cells
-  if not post_elements:
-    try:
-      all_elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] div[data-testid="cellInnerDiv"]')
-      filtered_elements = []
-      for element in all_elements:
-        if await is_after_last_done(element):
-          filtered_elements.append(element)
-      post_elements.extend(filtered_elements)
-      print(
-        f"Strategy 4 found {len(filtered_elements)} cell elements after last Done")
-    except Exception as e:
-      print(f"Strategy 4 error: {e}")
-  # Strategy 5: Look for links in received messages
-  if not post_elements:
-    try:
-      # Only look within divs that have tabindex="0"
-      all_elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] div[role="link"]')
-      filtered_elements = []
-      for element in all_elements:
-        if await is_after_last_done(element):
-          filtered_elements.append(element)
-      post_elements.extend(filtered_elements)
-      print(f"Strategy 5 found {len(filtered_elements)} links after last Done")
-    except Exception as e:
-      print(f"Strategy 5 error: {e}")
-  # Strategy 6: Look for any text messages containing tweet URLs
-  try:
-    # Look for any message spans
-    text_elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] span')
-    print(f"Found {len(text_elements)} potential text messages")
+    # Filter to only include links that appear after the last "Done" message
+    for element in all_link_elements:
+      if await is_after_last_done(element):
+        # Verify it has the expected class names
+        has_classes = await page.evaluate("""
+          (element) => {
+            const classes = element.className;
+            return classes && classes.includes('css-175oi2r') && 
+                   classes.includes('r-adacv') && 
+                   classes.includes('r-1udh08x') && 
+                   classes.includes('r-1867qdf');
+          }
+        """, element)
 
-    # Check each text element for tweet URLs
-    for text_element in text_elements:
-      try:
-        if not await is_after_last_done(text_element):
-          continue
+        if has_classes:
+          post_elements.append(element)
 
-        text_content = await page.evaluate('(element) => element.textContent', text_element)
-        if text_content and re.search(r'https?://(?:www\.)?(?:twitter\.com|x\.com)/[a-zA-Z0-9_]+/status/\d+', text_content):
-          post_elements.append(text_element)
-      except Exception as e:
-        print(f"Error checking text content: {e}")
-
-    print(f"Found {len(post_elements)} messages containing tweet URLs")
-
-    # Also look for tweet text elements as before
-    tweet_text_elements = await page.query_selector_all('div[tabindex="0"][data-testid="messageEntry"] span[data-testid="tweetText"]')
-    print(f"Found {len(tweet_text_elements)} tweet text elements in received messages")
-    if not post_elements and tweet_text_elements:
-      for tweet_text in tweet_text_elements:
-        try:
-          # Skip if the tweet text element is before the last Done message
-          if not await is_after_last_done(tweet_text):
-            continue
-
-          # Try to find the parent post element within the received message
-          parent = await page.evaluate("""
-                    (element) => {
-                        // Try to find a parent with role="link"
-                        let parent = element;
-                        for (let i = 0; i < 5; i++) {  // Look up to 5 levels up
-                            if (!parent) break;
-                            parent = parent.parentElement;
-                            if (parent && (parent.getAttribute('role') === 'link' || 
-                                          parent.getAttribute('data-testid') === 'cellInnerDiv')) {
-                                return parent;
-                            }
-                        }
-                        return null;
-                    }
-                    """, tweet_text)
-
-          if parent:
-            post_elements.append(parent)
-        except Exception as e:
-          print(f"Error finding parent of tweet text: {e}")
+    # As a backup, if we still found nothing, look for any role="link" elements
+    if len(post_elements) == 0:
+      print("No tweets with specific classnames found, using fallback method")
+      all_links = await page.query_selector_all('div[role="link"]')
+      for link in all_links:
+        if await is_after_last_done(link):
+          post_elements.append(link)
   except Exception as e:
-    print(f"Strategy 6 error: {e}")
+    print(f"Error finding tweet links: {e}")
 
   print(f"Found {len(post_elements)} total received Twitter posts in the chat")
   return post_elements
 
 
-async def open_tweet_in_new_tab(context, page, post_element, index):
-  """Try multiple methods to open a tweet in a new tab."""
+async def open_tweet_in_new_tab(context, page, post_element, tweet_index):
+  """Open a tweet in a new tab by clicking on the tweet element at the specified index."""
   try:
-    print(f"Processing Twitter post {index}...")
+    print(f"Processing Twitter post at index {tweet_index}...")
+    url_page = None
+    max_retries = 3  # Increased retries for better reliability
 
-    # First try to extract any URLs from the post's text
-    post_html = await page.evaluate('(element) => element.outerHTML', post_element)
-    post_urls = []
+    # Store original URL to detect navigation
+    original_url = page.url
+    print(f"Original URL before clicking: {original_url}")
 
-    if post_html:
-      # Extract URLs using regex - ONLY look for Twitter status URLs
-      url_matches = re.findall(
-        r'https?://(?:www\.)?(?:twitter\.com|x\.com)/[a-zA-Z0-9_]+/status/\d+', post_html)
-      post_urls.extend(url_matches)
+    # Attempt to click all tweet-like elements directly using JavaScript
+    # Instead of trying to use the passed element (which may get detached)
+    for retry in range(max_retries):
+      try:
+        print(f"Attempt #{retry+1} to find and click tweet elements...")
 
-    # Method 1: If we found valid status URLs, try them one by one
-    if post_urls:
-      # Open each extracted valid status URL in a new tab
-      for url in post_urls:
-        url_page = None
-        try:
-          # Clean up the URL - remove any trailing quotes, brackets, or other characters
-          clean_url = re.sub(r"['\"\)\]>,]+$", '', url)
-          print(
-            f"Opening valid Twitter status URL from post {index}: {clean_url}")
-          url_page = await context.new_page()
-          await url_page.goto(clean_url)
-          await asyncio.sleep(2)  # Wait for page to load
+        # First, ensure we're on the messages page
+        if not page.url.startswith("https://x.com/messages"):
+          print("Navigating back to messages page...")
+          await page.goto(original_url)
+          # Click the specific div element with role="link" based on index
+          # Target specific tweet divs with role="link" and required classnames
+          await asyncio.sleep(3)
+        clicked = await page.evaluate(f"""(targetIndex) => {{
+          // Find div elements with role="link" and specific classnames for tweets
+          const linkElements = document.querySelectorAll('div[role="link"].css-175oi2r.r-adacv.r-1udh08x.r-1867qdf');
+          console.log(`Found ${{linkElements.length}} div[role="link"] elements with tweet classnames`);
+          
+          if (linkElements.length === 0) {{
+            return false;
+          }}
+          
+          // Use direct order (no reverse calculation)
+          console.log(`Target index: ${{targetIndex}}, Using direct index: ${{targetIndex}}`);
+          
+          if (targetIndex >= 0 && targetIndex < linkElements.length) {{
+            try {{
+              const targetElement = linkElements[targetIndex];
+              targetElement.scrollIntoView({{behavior: 'auto', block: 'center'}});
+              console.log(`Clicking div[role="link"] element at direct index ${{targetIndex}}`);
+              targetElement.click();
+              return true;
+            }} catch(e) {{
+              console.error("Error clicking target element:", e);
+            }}
+          }}
+          
+          // Fallback: if index is out of range, try the first available element
+          if (linkElements.length > 0) {{
+            try {{
+              console.log("Index out of range, clicking first available tweet div");
+              linkElements[0].scrollIntoView({{behavior: 'auto', block: 'center'}});
+              linkElements[0].click();
+              return true;
+            }} catch(e) {{
+              console.error("Error clicking fallback element:", e);
+            }}
+          }}
+          
+          return false;
+        }}""", tweet_index)
 
-          # Try to retweet the post
-          retweet_result = await retweet_post(url_page)
+        if clicked:
+          print("Clicked on a potential tweet element")
+          await asyncio.sleep(3)  # Give it time to navigate
 
-          if retweet_result == "already_retweeted":
-            print(f"Tweet already retweeted: {clean_url}")
-            await url_page.close()
-            return True  # Stop processing this post entirely
-          elif retweet_result:
-            print(f"Successfully retweeted post from URL: {clean_url}")
-            await url_page.close()
-            return True  # Stop processing this post after successful retweet
+          # Check if we navigated to a tweet page
+          current_url = page.url
+          print(f"Current URL after clicking: {current_url}")
+
+          if current_url != original_url and ('status' in current_url):
+            print(f"Successfully navigated to tweet page: {current_url}")
+
+            # Open in new tab
+            url_page = await context.new_page()
+            await url_page.goto(current_url, wait_until="domcontentloaded")
+            await asyncio.sleep(2)
+
+            # Return to messages page
+            await page.goto(original_url)
+            await asyncio.sleep(2)
+
+            # Try to retweet
+            retweet_result = await retweet_post(url_page)
+
+            if retweet_result == "already_retweeted":
+              print(f"Tweet already retweeted (index {tweet_index})")
+            elif retweet_result:
+              print(f"Successfully retweeted post (index {tweet_index})")
+            else:
+              print(f"Failed to retweet post (index {tweet_index})")
+
+            if url_page:
+              await url_page.close()
+            return True
           else:
-            print(f"Failed to retweet post from URL: {clean_url}")
-            await url_page.close()
-            # Continue to try other URLs if available
+            print("Click didn't navigate to a tweet page")
 
-          await asyncio.sleep(1)  # Brief pause between attempts
-        except Exception as e:
-          print(f"Error opening valid status URL {clean_url}: {e}")
-          if url_page:
-            await url_page.close()
+        # If no click worked or we didn't navigate to a status page, try a different approach on next retry
+        if retry < max_retries - 1:
+          print(f"Retry {retry+1} failed, reloading page for next attempt...")
+          await page.goto(original_url)  # Go back to original page
+          await asyncio.sleep(5)  # Longer wait after reload
+
+      except Exception as e:
+        print(f"Error on attempt {retry+1}: {e}")
+        if url_page:
+          await url_page.close()
+          url_page = None
+
+        # On error, reload the page before next retry
+        if retry < max_retries - 1:
+          print(f"Error during attempt {retry+1}, reloading page...")
+          try:
+            await page.goto(original_url)
+            await asyncio.sleep(5)
+          except Exception:
+            pass
 
     print(
-      f"No valid status URL found in post {index} directly, trying alternative methods...")
-
-    # Method 2: Try to extract href attributes from any links inside
-    try:
-      href_values = await page.evaluate("""
-        (element) => {
-          const links = element.querySelectorAll('a[href]');
-          const hrefs = [];
-          for (let i = 0; i < links.length; i++) {
-            hrefs.push(links[i].getAttribute('href'));
-          }
-          return hrefs;
-        }
-      """, post_element)
-
-      if href_values and len(href_values) > 0:
-        for href in href_values:
-          url_page = None
-          if href and href.strip():
-            print(f"Found href: {href}")
-            full_url = href
-            if href.startswith('/'):
-              full_url = 'https://x.com' + href
-            elif not href.startswith('http'):
-              full_url = 'https://x.com/' + href
-
-            if re.match(r'https?://(?:www\.)?(?:twitter\.com|x\.com)/[a-zA-Z0-9_]+/status/\d+$', full_url):
-              try:
-                print(f"Opening valid href in new tab: {full_url}")
-                url_page = await context.new_page()
-                await url_page.goto(full_url)
-                await asyncio.sleep(2)
-
-                retweet_result = await retweet_post(url_page)
-
-                if retweet_result == "already_retweeted":
-                  print(f"Tweet already retweeted: {full_url}")
-                  await url_page.close()
-                  return True  # Stop processing this post entirely
-                elif retweet_result:
-                  print(f"Successfully retweeted post from URL: {full_url}")
-                  await url_page.close()
-                  return True  # Stop processing after successful retweet
-                else:
-                  print(f"Failed to retweet post from URL: {full_url}")
-                  await url_page.close()
-                  # Continue to next method on failure
-              except Exception as e:
-                print(f"Error opening valid href {full_url}: {e}")
-                if url_page:
-                  await url_page.close()
-            else:
-              print(f"Skipping non-status URL found in href: {full_url}")
-    except Exception as e:
-      print(f"Error extracting href values: {e}")
-
-    # Method 3: Try constructing URL from post content
-    try:
-      if post_html:
-        status_id_match = re.search(r'status[/=](\d+)', post_html)
-        if status_id_match:
-          status_id = status_id_match.group(1)
-          username_match = re.search(r'@([a-zA-Z0-9_]+)', post_html)
-          username = username_match.group(1) if username_match else 'twitter'
-
-          constructed_url = f'https://x.com/{username}/status/{status_id}'
-          print(f"Constructed URL from post: {constructed_url}")
-
-          url_page = await context.new_page()
-          await url_page.goto(constructed_url)
-          await asyncio.sleep(2)
-
-          retweet_result = await retweet_post(url_page)
-
-          if retweet_result == "already_retweeted":
-            print(f"Tweet already retweeted: {constructed_url}")
-            await url_page.close()
-            return True  # Stop processing this post entirely
-          elif retweet_result:
-            print(f"Successfully retweeted post from URL: {constructed_url}")
-            await url_page.close()
-            return True  # Stop processing after successful retweet
-          else:
-            print(f"Failed to retweet post from URL: {constructed_url}")
-            await url_page.close()
-            return False  # All methods tried and failed
-    except Exception as e:
-      print(f"Error constructing URL from post: {e}")
-      if url_page:
-        await url_page.close()
-
-    print("Failed to open a valid status URL for this post")
+      f"Could not process tweet {tweet_index} after {max_retries} attempts")
     return False
+
   except Exception as e:
-    print(f"Failed to process Twitter post {index}: {e}")
+    print(f"Failed to process Twitter post {tweet_index}: {e}")
+    if url_page:
+      await url_page.close()
     return False
 
 
@@ -605,24 +508,34 @@ async def process_chat_tweets(context, page, chat_index):
       print(f"Failed to open chat {chat_index + 1}")
       return 0
 
-    # Wait for chat to load
-    await asyncio.sleep(5)
-
-    # Find Twitter posts in the chat
+    # Wait for chat to load with a reasonable delay
+    await asyncio.sleep(5)    # Find Twitter posts in the chat
     post_elements = await find_tweets_in_chat(page)
-    # Process each Twitter post
     print(f"Found {len(post_elements)} tweet(s) in chat {chat_index + 1}")
+
+    if len(post_elements) == 0:
+      print("No tweets found. Refreshing page to try again...")
+      await page.reload()
+      await asyncio.sleep(5)
+      post_elements = await find_tweets_in_chat(page)
+      print(
+        f"After refresh: found {len(post_elements)} tweet(s) in chat {chat_index + 1}")
+
+    # Process each Twitter post
     tweets_opened = 0
-    tweets_retweeted = 0
-    for j, post_element in enumerate(post_elements):
-      success = await open_tweet_in_new_tab(context, page, post_element, j + 1)
+
+    for j in range(len(post_elements)):
+      post_element = post_elements[j]
+      print(f"\n--- Processing Tweet {j + 1}/{len(post_elements)} ---")
+      success = await open_tweet_in_new_tab(context, page, post_element, j)
       if success:
         tweets_opened += 1
-      await asyncio.sleep(2)  # Delay between processing posts    # No need to send "Done" message - user will send it manually
+      await asyncio.sleep(2)
+
     if tweets_opened > 0:
       print("Finished processing tweets - you can now send 'Done' message manually")
     else:
-      print("No new tweets processed")
+      print("No tweets were successfully processed")
 
     print(
       f"Finished processing chat {chat_index + 1} - Opened {tweets_opened} tweet(s)")
@@ -651,70 +564,9 @@ async def find_chat_elements(page):
       chat_elements = await page.query_selector_all('div[data-testid="cellInnerDiv"]')
       print(f"Found {len(chat_elements)} cellInnerDiv elements")
     except Exception as e2:
-      print(f"Second attempt failed: {e2}")
-      # Third attempt - try a more general approach
-      print("Trying a more general approach...")
-      await asyncio.sleep(5)
-      await page.screenshot(path="messages_page.png")
-      print("Took screenshot of the page for debugging")
-      chat_elements = await page.query_selector_all('div[role="none"][data-testid="conversation"], div[tabindex="0"][data-testid="conversation"]')
-      print(
-        f"Found {len(chat_elements)} conversation elements with general selector")
-
-      # Fourth attempt - look for anything clickable in the chat list
-      if not chat_elements:
-        chat_elements = await page.query_selector_all('div[role="tablist"] > div')
-        print(f"Found {len(chat_elements)} general div elements in tablist")
-
+      print(f"No conversation elements found: {e2}")
+      return []
   return chat_elements
-
-
-async def send_done_message(page):
-  """Send 'Done' message in the current chat."""
-  try:
-    # Wait for a moment to ensure the chat is loaded
-    await asyncio.sleep(2)
-
-    # Try to find the message input area with various selectors
-    input_selectors = [
-      'div[data-contents="true"][role="textbox"]',
-      'div[contenteditable="true"][role="textbox"]',
-      'div[data-testid="dmComposerTextInput"]'
-    ]
-
-    input_element = None
-    for selector in input_selectors:
-      try:
-        input_element = await page.wait_for_selector(selector, timeout=5000)
-        if input_element:
-          print(f"Found message input with selector: {selector}")
-          break
-      except Exception:
-        continue
-
-    if not input_element:
-      print("Could not find message input area")
-      return False
-
-    # Type the message
-    await input_element.type("Done")
-    print("Typed 'Done' message")
-
-    # Find and click the send button
-    try:
-      send_button = await page.wait_for_selector('button[data-testid="dmComposerSendButton"]', timeout=5000)
-      if send_button:
-        await send_button.click()
-        print("Clicked send button")
-        await asyncio.sleep(1)  # Wait for message to send
-        return True
-    except Exception as e:
-      print(f"Error clicking send button: {e}")
-      return False
-
-  except Exception as e:
-    print(f"Error sending 'Done' message: {e}")
-    return False
 
 
 async def find_done_messages(page):
@@ -726,7 +578,8 @@ async def find_done_messages(page):
     done_messages = await page.query_selector_all('span.css-1jxf684.r-bcqeeo.r-1ttztb7.r-qvutc0.r-poiln3')
 
     done_count = 0
-    last_done_element = None    # Verify each element has text that matches "done" (case-insensitive) and get the last one
+    # Verify each element has text that matches "done" (case-insensitive) and get the last one
+    last_done_element = None
     for msg in done_messages:
       try:
         text = await page.evaluate('(element) => element.textContent', msg)

@@ -1,12 +1,22 @@
-__cf_bm	jANy_ZRW8tCviyabV2xCSWtDW7Q0dialIKJu4mE6hAI-1748079748-1.0.1.1-qBb9uORi8LAeAmO5VGt8LiMEH7F8_404vlIQcXLb0T.uZB6vq9Or7ghg1hmpB70atNzg5c9V8pHEH4v4rCoYdV98_zirLVEwEEnv33w2n4c	.x.com	/	2025-05-24T10:12:30.840Z	177	✓	✓	None			Medium	
-auth_token	ce08184dbe40b7e756273d2713180d08e1bb4c5e	.x.com	/	2025-11-03T09:04:17.694Z	50	✓	✓	None			Medium	
-ct0	e82311c929abfb69639a8b0047b2da2bb971252ce614bb0c3acffb1a780fe48002170753a0a97682aceae1876f162b0ad8ef8834dc0e91870cd2843ccc0e81bdf384a515d180a8d808938f768801bd4a	.x.com	/	2025-11-03T09:04:18.255Z	163		✓	Lax			Medium	
-d_prefs	MjoxLGNvbnNlbnRfdmVyc2lvbjoyLHRleHRfdmVyc2lvbjoxMDAw	.x.com	/	2025-05-31T09:42:28.036Z	59		✓				Medium	
-external_referer	padhuUp37ziW3hCKK2C7T49PwrS7bt%2B1|0|8e8t2xd8A2w%3D	.x.com	/	2025-05-30T19:08:24.353Z	67		✓				Medium	
-guest_id	v1%3A174660862747937929	.x.com	/	2025-11-03T09:03:54.478Z	31		✓	None			Medium	
-guest_id_ads	v1%3A174660862747937929	.x.com	/	2025-11-20T09:42:31.239Z	35		✓	None			Medium	
-guest_id_marketing	v1%3A174660862747937929	.x.com	/	2025-11-20T09:42:31.239Z	41		✓	None			Medium	
-kdt	Ispipf7vTCqlxx35SHgwJ0objPZuIo1Jg6meS61o	.x.com	/	2025-11-03T09:04:17.693Z	43	✓	✓				Medium	
-lang	en	x.com	/	Session	6						Medium	
-personalization_id	"v1_UzbCil0PR//7jz5fXmxmJg=="	.x.com	/	2025-11-12T10:13:49.407Z	47		✓	None			Medium	
-twid	u%3D1285964735389872131	.x.com	/	2025-11-20T09:42:31.239Z	27		✓	None			Medium	
+__cf_bm	WkYlNKm1UZp3gG6qI7wLkoYioWEdmjwATW3AnbB73rA-1749189791-1.0.1.1-ylgaaGIsKqN2rVqjN58bE1Ygn2HmrYGhgE7IpzOaYE.0YY4hMuIqI75Jz2l50cjqxyDoBbnuKWIMGQCUaW160MgpQFB2cmbRFt1lLj5PTIk	.x.com	/	2025-06-06T06:33:03.868Z	177	✓	✓	None			Medium
+_ga	GA1.1.1349160203.1735933088	.x.com	/	2026-07-06T11:29:42.843Z	30						Medium
+_ga_BLY4P7T5KW	GS2.1.s1748777382$o1$g0$t1748777396$j46$l0$h0	.x.com	/	2026-07-06T11:29:56.575Z	59						Medium
+_ga_RJGMY4G45L	GS1.1.1740173966.1.1.1740174028.60.0.0	.x.com	/	2026-03-28T21:40:28.645Z	52						Medium
+att	1-lg4v6TQwLhmUNmmLiYTWkcruhvqvAVcxsvGMzdvN	.x.com	/	2025-06-07T05:59:48.430Z	45	✓	✓	None			Medium
+auth_token	9f79deca6a98ca7594ecf7a3cd033a79d14220e4	.x.com	/	2026-07-11T05:59:47.220Z	50	✓	✓	None			Medium
+ct0	192906a3ec28c86d3feb6aa9ddb11a77d88c45a07e21e8eb9374e406c240e02722f46ccfd5e190c420ea68dd483a30104ddea23c936b6fe5eb429c583b9babd7176c503362c9fbdd600b4e2e01096dca	.x.com	/	2026-07-11T05:59:47.813Z	163		✓	Lax			Medium
+d_prefs	MToxLGNvbnNlbnRfdmVyc2lvbjoyLHRleHRfdmVyc2lvbjoxMDAw	.x.com	/	2025-07-02T19:28:07.330Z	59		✓				Medium
+des_opt_in	Y	.x.com	/	2026-02-07T19:38:02.790Z	11						Medium
+dnt	1	.x.com	/	2026-07-11T05:59:25.723Z	4		✓	None			Medium
+g_state	{"i_l":0}	x.com	/	2025-12-03T05:59:45.000Z	16						Medium
+gt	1930867137691672630	.x.com	/	2025-06-06T08:29:26.351Z	21		✓				Medium
+guest_id	v1%3A174918957403178773	.x.com	/	2026-07-11T05:59:26.185Z	31		✓	None			Medium
+guest_id_ads	v1%3A174918957403178773	.x.com	/	2026-07-11T06:10:37.498Z	35		✓	None			Medium
+guest_id_marketing	v1%3A174918957403178773	.x.com	/	2026-07-11T06:10:37.499Z	41		✓	None			Medium
+kdt	pGgDdWUnYvh8KuDuxdcA3cXG6iotZo9KaHLd5uqz	.x.com	/	2026-07-11T05:59:47.219Z	43	✓	✓				Medium
+lang	en	x.com	/	Session	6						Medium
+night_mode	2	.x.com	/	2026-06-06T06:03:38.703Z	11		✓	None			Medium
+personalization_id	"v1_Pcp1SW/bs/I6dLi73VTISQ=="	.x.com	/	2026-07-11T05:59:26.351Z	47		✓	None			Medium
+ph_phc_TXdpocbGVeZVm5VJmAsHTMrCofBQu3e0kN8HGMNGTVW_posthog	%7B%22distinct_id%22%3A%2201952a74-0653-7a3e-810b-2137a5548138%22%2C%22%24sesid%22%3A%5B1740174032033%2C%2201952a74-0652-7533-b9df-8191ef783052%22%2C1740174001746%5D%7D	.x.com	/	2026-02-21T21:40:32.000Z	226		✓	Lax			Medium
+twid	u%3D1730545166283681792	.x.com	/	2026-06-06T06:10:37.499Z	27		✓	None			Medium
+twtr_pixel_opt_in	Y	.x.com	/	2026-01-03T19:35:41.000Z	18						Medium
