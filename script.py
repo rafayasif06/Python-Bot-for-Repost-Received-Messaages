@@ -7,6 +7,9 @@ from pathlib import Path
 from playwright.async_api import async_playwright
 import logging
 
+# Constants
+DONE_MESSAGE_TEXT = "Done"
+
 
 # Setup logging to file
 logs_dir = Path(os.path.dirname(os.path.abspath(__file__))) / 'logs'
@@ -248,130 +251,91 @@ async def retweet_post(page):
     return "failed"
 
 
-async def find_tweets_in_chat(page):
-  """Find received Twitter posts in the chat that appear after the last 'Done' message."""
-  log("Looking for received Twitter posts in the chat...")
+async def scroll_and_capture_links(page):
+  """Scroll incrementally and capture links until 'Done' message is found or top of chat is reached."""
+  log("Starting incremental scrolling to capture links...")
 
-  # Wait for messages container or chat content to be visible
-  try:
-    await page.wait_for_selector('div[data-testid="DMDrawer"], div[data-testid="conversation"]', timeout=10000)
-    log("Chat content container found")
-    # Give the page a little extra time to render content
-    await asyncio.sleep(3)
+  captured_links = []
+  done_message_found = False
+  scroll_count = 0
+  previous_scroll_top = None
 
-    # First find the last "Done" message
-    last_done_element, done_count = await find_done_messages(page)
-    log(f"\nFound {done_count} 'Done' message(s) in this chat")
-  except Exception as e:
-    log(f"Wait for messages container timed out, continuing anyway: {e}")
+  # Selectors for capturing elements
+  embedded_selector = 'div[role="link"].css-175oi2r.r-adacv.r-1udh08x.r-1867qdf'
+  link_selector = 'a[role="link"][href*="/status/"]'
 
-  post_elements = []
+  while not done_message_found:
+    scroll_count += 1
+    log(f"Performing scroll {scroll_count}...")
 
-  # Helper function to check if an element comes after the last Done message
-  async def is_after_last_done(element):
-    if not last_done_element:
-      return True  # If no Done message found, include all tweets
+    # Get current scroll position before scrolling
+    current_scroll_top = await page.evaluate("document.querySelector('[data-testid=\"DmActivityViewport\"]').scrollTop")
 
-    try:
-      # Get the bounding boxes of both elements
-      last_done_box = await page.evaluate("""
-        (element) => {
-          const rect = element.getBoundingClientRect();
-          return {top: rect.top, bottom: rect.bottom};
-        }
-      """, last_done_element)
+    # Check if we've reached the top of the chat (no more scrolling possible)
+    if previous_scroll_top is not None and current_scroll_top == previous_scroll_top:
+      log("Reached the top of the chat, no more content to scroll.")
+      break
 
-      element_box = await page.evaluate("""
-        (element) => {
-          const rect = element.getBoundingClientRect();
-          return {top: rect.top, bottom: rect.bottom};
-        }
-      """, element)
+    # Scroll up within the specific viewport div
+    await page.evaluate("document.querySelector('[data-testid=\"DmActivityViewport\"]').scrollBy(0, -window.innerHeight)")
+    await asyncio.sleep(2)  # Wait for new content to load
 
-      # Compare vertical positions - if element is below the Done message, it appears later
-      return element_box['top'] > last_done_box['bottom']
-    except Exception as e:
-      log(f"Error comparing element positions: {e}")
-      return True  # Include tweet if we can't determine position
+    # Update previous scroll position
+    previous_scroll_top = current_scroll_top
 
-  try:
-    # Method 1: Find embedded tweets (divs with role="link" and specific classnames)
-    embedded_selector = 'div[role="link"].css-175oi2r.r-adacv.r-1udh08x.r-1867qdf'
-    embedded_elements = await page.query_selector_all(embedded_selector)
-    log(f"Found {len(embedded_elements)} embedded tweet elements")
+    # Capture links after every 3 scrolls or if we've found the done message
+    if scroll_count % 3 == 0:
+      # Capture embedded tweets (divs with role="link" and specific classnames)
+      embedded_elements = await page.query_selector_all(embedded_selector)
+      log(
+        f"Captured {len(embedded_elements)} embedded tweet elements during scroll {scroll_count}.")
 
-    # Method 2: Find direct Twitter/X links (a elements with role="link" and href containing "/status/")
-    link_selector = 'a[role="link"][href*="/status/"]'
-    direct_link_elements = await page.query_selector_all(link_selector)
-    log(f"Found {len(direct_link_elements)} direct Twitter link elements")
+      for element in embedded_elements:
+        if element not in [item['element'] for item in captured_links]:
+          captured_links.append(
+            {'href': None, 'type': 'embedded', 'element': element})
 
-    # Combine both types and filter by position after last Done message
-    all_tweet_elements = []
+      # Capture direct Twitter/X links (a elements with role="link" and href containing "/status/")
+      direct_link_elements = await page.query_selector_all(link_selector)
+      log(
+        f"Captured {len(direct_link_elements)} direct Twitter link elements during scroll {scroll_count}.")
 
-    # Add embedded tweets
-    for element in embedded_elements:
-      if await is_after_last_done(element):
-        all_tweet_elements.append({'element': element, 'type': 'embedded'})
+      for link in direct_link_elements:
+        href = await link.get_attribute('href')
+        if href and href not in [item['href'] for item in captured_links]:
+          captured_links.append(
+            {'href': href, 'type': 'direct_link', 'element': link})
 
-    # Add direct links
-    for element in direct_link_elements:
-      if await is_after_last_done(element):
-        try:
-          href = await element.get_attribute('href')
-        except Exception:
-          href = None
-        all_tweet_elements.append(
-          {'element': element, 'type': 'direct_link', 'href': href})
+    # Check for 'Done' message using the constant
+    done_message = await page.query_selector(f'div:has-text("{DONE_MESSAGE_TEXT}")')
+    if done_message:
+      log(f"'{DONE_MESSAGE_TEXT}' message found, stopping scroll.")
+      done_message_found = True
+      break
 
-    # Sort by vertical position (top to bottom)
-    if all_tweet_elements:
-      sorted_elements = []
-      for item in all_tweet_elements:
-        try:
-          box = await page.evaluate("""
-            (element) => {
-              const rect = element.getBoundingClientRect();
-              return {top: rect.top};
-            }
-          """, item['element'])
-          sorted_elements.append({'item': item, 'top': box['top']})
-        except:
-          sorted_elements.append({'item': item, 'top': 0})
+    # Safety check to prevent infinite scrolling
+    if scroll_count >= 50:
+      log("Reached maximum scroll limit (50), stopping scroll.")
+      break
 
-      # Sort by top position
-      sorted_elements.sort(key=lambda x: x['top'])
-      post_elements = [item['item'] for item in sorted_elements]
+  # Perform a final capture to ensure we get all links
+  log("Performing final capture after scrolling completed...")
+  embedded_elements_final = await page.query_selector_all(embedded_selector)
+  for element in embedded_elements_final:
+    if element not in [item['element'] for item in captured_links]:
+      captured_links.append(
+        {'href': None, 'type': 'embedded', 'element': element})
 
-    # Fallback: if no tweets found with specific methods, try general approach
-    if len(post_elements) == 0:
-      log("No tweets found with specific methods, using fallback approach")
-      fallback_elements = await page.query_selector_all('div[role="link"], a[role="link"]')
-      for element in fallback_elements:
-        if await is_after_last_done(element):
-          # Check if it's a Twitter-related link
-          try:
-            href = await element.get_attribute('href')
-            classes = await element.get_attribute('class') or ''
-            if (href and ('/status/' in href or 'twitter.com' in href or 'x.com' in href)) or \
-               ('css-175oi2r' in classes and 'r-adacv' in classes):
-              element_type = 'direct_link' if href else 'embedded'
-              post_elements.append({'element': element, 'type': element_type})
-          except:
-            pass
+  links_final = await page.query_selector_all(link_selector)
+  for link in links_final:
+    href = await link.get_attribute('href')
+    if href and href not in [item['href'] for item in captured_links]:
+      captured_links.append(
+        {'href': href, 'type': 'direct_link', 'element': link})
 
-  except Exception as e:
-    log(f"Error finding tweet elements: {e}")
-
-  log(f"Found {len(post_elements)} total Twitter posts in the chat")
-  if post_elements:
-    embedded_count = sum(
-      1 for item in post_elements if item['type'] == 'embedded')
-    direct_count = sum(
-      1 for item in post_elements if item['type'] == 'direct_link')
-    log(f"  - {embedded_count} embedded tweets")
-    log(f"  - {direct_count} direct links")
-
-  return post_elements
+  log(
+    f"Captured a total of {len(captured_links)} unique links after {scroll_count} scrolls.")
+  return captured_links
 
 
 async def open_tweet_in_new_tab(context, page, post_item, tweet_index):
@@ -552,7 +516,7 @@ async def open_tweet_in_new_tab(context, page, post_item, tweet_index):
 
 
 async def open_chat_by_index(page, chat_index):
-  """Open a specific chat by its index and scroll up to load more tweets."""
+  """Open a specific chat by its index."""
   try:
     log(f"Attempting to open chat at index {chat_index}...")
 
@@ -594,17 +558,6 @@ async def open_chat_by_index(page, chat_index):
         log(f"Click failed: {e}")
         return False
 
-    # Scroll up to load more tweets
-    try:
-      log("Scrolling up to load more tweets...")
-      scrollable_div_selector = 'div[data-viewportview="true"][data-testid="DmActivityViewport"]'
-      for _ in range(5):  # Adjust the range for more or fewer scrolls
-        await page.evaluate(f"document.querySelector('{scrollable_div_selector}').scrollBy(0, -5000)")
-        await asyncio.sleep(1)  # Wait for content to load
-      log("Finished scrolling up.")
-    except Exception as e:
-      log(f"Error while scrolling up: {e}")
-
     return True
   except Exception as e:
     log(f"Failed to open chat: {e}")
@@ -645,7 +598,11 @@ async def process_chat_tweets(context, page, chat_index):
 
     for j in range(len(post_elements)):
       post_item = post_elements[j]
-      element_type = post_item['type']
+      if not isinstance(post_item, dict):
+        log(f"Skipping invalid post item at index {j}: {post_item}")
+        continue
+
+      element_type = post_item.get('type', 'unknown')
       log(
         f"\n--- Processing Tweet {j + 1}/{len(post_elements)} ({element_type}) ---")
 
@@ -702,95 +659,6 @@ async def find_chat_elements(page):
       log(f"No conversation elements found: {e2}")
       return []
   return chat_elements
-
-
-async def find_done_messages(page):
-  """Find all 'Done' messages in the current chat and return the last one."""
-  try:
-    log("Looking for 'Done' messages in chat...")
-
-    # Try to find all spans with the exact text "Done"
-    done_messages = await page.query_selector_all('span.css-1jxf684.r-bcqeeo.r-1ttztb7.r-qvutc0.r-poiln3')
-
-    done_count = 0
-    # Verify each element has text that matches "done" (case-insensitive) and get the last one
-    last_done_element = None
-    for msg in done_messages:
-      try:
-        text = await page.evaluate('(element) => element.textContent', msg)
-        if text.strip().lower() == "done":
-          done_count += 1
-          last_done_element = msg
-        log(f"Error checking message text: {e}")
-        continue
-      except Exception as e:
-        log(f"Error getting message text: {e}")
-        continue
-
-    log(f"Found {done_count} 'Done' message(s) in chat")
-    return last_done_element, done_count
-
-  except Exception as e:
-    log(f"Error finding 'Done' messages: {e}")
-    return None, 0
-
-
-async def scroll_and_capture_links(page):
-  """Scroll incrementally and capture links until 'Done' message is found or 10 scrolls are completed."""
-  log("Starting incremental scrolling to capture links...")
-
-  scrollable_selector = 'div[data-viewportview="true"][data-testid="DmActivityViewport"]'
-  done_message_selector = 'div:has-text("Done")'
-
-  try:
-    scrollable_element = await page.query_selector(scrollable_selector)
-    if not scrollable_element:
-      log("Scrollable element not found, aborting...")
-      return []
-
-    all_links = []
-    for scroll_count in range(10):
-      log(f"Performing scroll {scroll_count + 1}...")
-
-      # Scroll down one full screen
-      await page.evaluate("""
-                (element) => {
-                    element.scrollBy(0, element.clientHeight);
-                }
-            """, scrollable_element)
-
-      # Wait for content to load
-      await asyncio.sleep(2)
-
-      # Check if 'Done' message is visible
-      done_message = await page.query_selector(done_message_selector)
-      if done_message:
-        log("'Done' message found, stopping scrolling...")
-        break
-
-      # Capture links after scrolling
-      embedded_selector = 'div[role="link"].css-175oi2r.r-adacv.r-1udh08x.r-1867qdf'
-      link_selector = 'a[role="link"][href*="/status/"]'
-
-      embedded_elements = await page.query_selector_all(embedded_selector)
-      direct_link_elements = await page.query_selector_all(link_selector)
-
-      log(f"Found {len(embedded_elements)} embedded tweet elements and {len(direct_link_elements)} direct link elements after scroll {scroll_count + 1}")
-
-      for element in embedded_elements:
-        all_links.append({'element': element, 'type': 'embedded'})
-
-      for element in direct_link_elements:
-        href = await element.get_attribute('href')
-        all_links.append(
-          {'element': element, 'type': 'direct_link', 'href': href})
-
-    log(f"Captured a total of {len(all_links)} links after scrolling.")
-    return all_links
-
-  except Exception as e:
-    log(f"Error during scrolling and capturing links: {e}")
-    return []
 
 
 async def run_script():
@@ -851,9 +719,9 @@ async def run_script():
         # Session execution loop
         running_session = True
         while running_session:
-          for iteration_num in range(3):
+          for iteration_num in range(2):
             try:
-              if iteration_num in [1, 2]:
+              if iteration_num > 0:
                 log(
                   f"\n--- Starting forced iteration {iteration_num+1}: reloading browser context and page to ensure nothing is missed ---")
                 try:
@@ -911,7 +779,7 @@ async def run_script():
                 log("No chats found to process")
 
               # Only sleep between iterations, not after the last one
-              if iteration_num < 2:
+              if iteration_num < 1:
                 log(
                   f"\n--- Iteration {iteration_num+1} complete. Preparing for next forced iteration... ---")
                 await asyncio.sleep(2)
