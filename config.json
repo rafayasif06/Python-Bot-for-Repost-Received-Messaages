@@ -1,4 +1,5 @@
 {
   "done_message_text": "Done",
-  "scrolls_count_for_each_capture": 2
+  "scrolls_count_for_each_capture": 2,
+  "iterations_count": 2
 }

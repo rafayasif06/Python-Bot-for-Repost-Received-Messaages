@@ -24,13 +24,15 @@ def load_config():
     print("Warning: config.json not found. Using default values.")
     return {
         "done_message_text": "Done",
-        "scrolls_count_for_each_capture": 2
+        "scrolls_count_for_each_capture": 2,
+        "iterations_count": 2
     }
   except json.JSONDecodeError as e:
     print(f"Error parsing config.json: {e}. Using default values.")
     return {
         "done_message_text": "Done",
-        "scrolls_count_for_each_capture": 2
+        "scrolls_count_for_each_capture": 2,
+        "iterations_count": 2
     }
 
 
@@ -41,6 +43,7 @@ CONFIG = load_config()
 DONE_MESSAGE_TEXT = CONFIG.get("done_message_text", "Done")
 SCROLLS_COUNT_FOR_EACH_CAPTURE = CONFIG.get(
   "scrolls_count_for_each_capture", 2)
+ITERATIONS_COUNT = CONFIG.get("iterations_count", 3)
 
 
 # Setup logging to file
@@ -646,9 +649,7 @@ async def process_chat_tweets(context, page, chat_index):
       else:
         tweets_failed += 1
 
-      await asyncio.sleep(2)
-
-    # Display summary for this chat
+      await asyncio.sleep(2)    # Display summary for this chat
     total_processed = tweets_retweeted + tweets_already_retweeted + tweets_failed
     log(f"\n=== Chat {chat_index + 1} Summary ===")
     log(f"Total tweets found: {len(post_elements)}")
@@ -656,10 +657,16 @@ async def process_chat_tweets(context, page, chat_index):
     log(f"Already retweeted: {tweets_already_retweeted}")
     log(f"Failed to process: {tweets_failed}")
 
+    # Automatically send "Done" message only if at least one tweet was successfully retweeted
     if tweets_retweeted > 0:
-      log("Finished processing tweets - you can now send 'Done' message manually")
+      log("Automatically sending 'Done' message (new retweets were made)...")
+      done_sent = await send_done_message(page)
+      if done_sent:
+        log("'Done' message sent successfully")
+      else:
+        log("Failed to send 'Done' message automatically")
     else:
-      log("No new tweets were retweeted")
+      log("No new retweets made, skipping 'Done' message")
 
     log(f"Finished processing chat {chat_index + 1}")
     return tweets_retweeted
@@ -690,6 +697,48 @@ async def find_chat_elements(page):
       log(f"No conversation elements found: {e2}")
       return []
   return chat_elements
+
+
+async def send_done_message(page):
+  """Automatically send the 'Done' message in the current chat."""
+  try:
+    log(f"Attempting to send '{DONE_MESSAGE_TEXT}' message...")
+
+    # Wait for the message input area to be available
+    await page.wait_for_selector('[data-testid="dmComposerTextInput"]', timeout=10000)
+
+    # Find the message input field
+    message_input = await page.query_selector('[data-testid="dmComposerTextInput"]')
+    if not message_input:
+      log("Could not find message input field")
+      return False
+
+    # Click on the input field to focus it
+    await message_input.click()
+    await asyncio.sleep(0.5)
+
+    # Type the done message
+    await message_input.fill(DONE_MESSAGE_TEXT)
+    await asyncio.sleep(0.5)
+
+    # Find and click the send button
+    send_button = await page.query_selector('[data-testid="dmComposerSendButton"]')
+    if not send_button:
+      # Try alternative selector
+      send_button = await page.query_selector('button[aria-label="Send message"]')
+
+    if send_button:
+      await send_button.click()
+      log(f"Successfully sent '{DONE_MESSAGE_TEXT}' message")
+      await asyncio.sleep(1)
+      return True
+    else:
+      log("Could not find send button")
+      return False
+
+  except Exception as e:
+    log(f"Error sending '{DONE_MESSAGE_TEXT}' message: {e}")
+    return False
 
 
 async def run_script():
@@ -745,39 +794,17 @@ async def run_script():
               log("Please enter a value between 1 and 5 hours.")
           log(
             f"\nStarting multiple iterations mode with {hours} hour interval.")
-          log("Press Ctrl+C to pause/stop.")
-
-        # Session execution loop
+          log("Press Ctrl+C to pause/stop.")        # Session execution loop
         running_session = True
         while running_session:
-          for iteration_num in range(2):
+          # Perform multiple iterations based on config
+          for iteration_num in range(ITERATIONS_COUNT):
             try:
               if iteration_num > 0:
                 log(
-                  f"\n--- Starting forced iteration {iteration_num+1}: reloading browser context and page to ensure nothing is missed ---")
-                try:
-                  await page.close()
-                except Exception:
-                  pass
-                try:
-                  await context.close()
-                except Exception:
-                  pass
-                # Recreate browser context and page
-                context = await browser.new_context(
-                    viewport={"width": 1550, "height": 720},
-                    screen={"width": 1550, "height": 720}
-                )
-                page = await context.new_page()
-                # Re-add cookies
-                try:
-                  cookies_file_path = os.path.join(os.path.dirname(
-                      os.path.abspath(__file__)), 'cookies.txt')
-                  cookies = parse_cookies_from_file(cookies_file_path)
-                  await context.add_cookies(cookies)
-                  log(f"Reloaded {len(cookies)} cookies after context reload")
-                except Exception as e:
-                  log(f"Error reloading cookies: {e}")
+                  f"\n--- Starting iteration {iteration_num+1} of {ITERATIONS_COUNT} ---")
+                # Small delay between iterations
+                await asyncio.sleep(2)
 
               # Navigate to messages
               await page.goto('https://x.com/messages')
@@ -805,24 +832,25 @@ async def run_script():
                   tweets_opened = await process_chat_tweets(context, page, i)
                   total_tweets_opened += tweets_opened
                 log(
-                  f"\nProcessing completed: {total_tweets_opened} tweets processed from {chat_count} chats")
+                  f"\nIteration {iteration_num+1}: {total_tweets_opened} tweets processed from {chat_count} chats")
               else:
-                log("No chats found to process")
-
-              # Only sleep between iterations, not after the last one
-              if iteration_num < 1:
-                log(
-                  f"\n--- Iteration {iteration_num+1} complete. Preparing for next forced iteration... ---")
-                await asyncio.sleep(2)
+                log(f"Iteration {iteration_num+1}: No chats found to process")
 
             except Exception as e:
-              log(f"Error in iteration: {e}")
+              log(f"Error in iteration {iteration_num+1}: {e}")
               choice = get_int_input(
-                "\nRetry? (1 for yes, 2 for no): ", [1, 2])
-              if choice == 2:
-                return
+                "\nRetry this iteration? (1 for yes, 2 for skip to next): ", [1, 2])
+              if choice == 1:
+                # Retry current iteration
+                iteration_num -= 1
+                continue
+              else:
+                # Skip to next iteration
+                continue
 
-          # After both iterations, continue with the rest of the session logic
+          log(
+            f"\nCompleted all {ITERATIONS_COUNT} iterations for this session.")
+
           # For multiple iterations mode, continue with the interval or handle interruption
           if initial_choice == 2:
             try:
