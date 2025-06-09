@@ -2,13 +2,45 @@ import asyncio
 import os
 import re
 import sys
+import json
 from datetime import datetime
 from pathlib import Path
 from playwright.async_api import async_playwright
 import logging
 
-# Constants
-DONE_MESSAGE_TEXT = "Done"
+# Load configuration from config.json
+
+
+def load_config():
+  """Load configuration from config.json file."""
+  try:
+    config_path = os.path.join(os.path.dirname(
+      os.path.abspath(__file__)), 'config.json')
+    with open(config_path, 'r', encoding='utf-8') as f:
+      config = json.load(f)
+    print(f"Configuration loaded successfully from {config_path}")
+    return config
+  except FileNotFoundError:
+    print("Warning: config.json not found. Using default values.")
+    return {
+        "done_message_text": "Done",
+        "scrolls_count_for_each_capture": 2
+    }
+  except json.JSONDecodeError as e:
+    print(f"Error parsing config.json: {e}. Using default values.")
+    return {
+        "done_message_text": "Done",
+        "scrolls_count_for_each_capture": 2
+    }
+
+
+# Load configuration
+CONFIG = load_config()
+
+# User-configurable constants from config
+DONE_MESSAGE_TEXT = CONFIG.get("done_message_text", "Done")
+SCROLLS_COUNT_FOR_EACH_CAPTURE = CONFIG.get(
+  "scrolls_count_for_each_capture", 2)
 
 
 # Setup logging to file
@@ -278,13 +310,12 @@ async def scroll_and_capture_links(page):
 
     # Scroll up within the specific viewport div
     await page.evaluate("document.querySelector('[data-testid=\"DmActivityViewport\"]').scrollBy(0, -window.innerHeight)")
-    await asyncio.sleep(2)  # Wait for new content to load
-
-    # Update previous scroll position
+    # Wait for new content to load    # Update previous scroll position
+    await asyncio.sleep(2)
     previous_scroll_top = current_scroll_top
 
-    # Capture links after every 3 scrolls or if we've found the done message
-    if scroll_count % 3 == 0:
+    # Capture links after every configured number of scrolls or if we've found the done message
+    if scroll_count % SCROLLS_COUNT_FOR_EACH_CAPTURE == 0:
       # Capture embedded tweets (divs with role="link" and specific classnames)
       embedded_elements = await page.query_selector_all(embedded_selector)
       log(
@@ -304,14 +335,14 @@ async def scroll_and_capture_links(page):
         href = await link.get_attribute('href')
         if href and href not in [item['href'] for item in captured_links]:
           captured_links.append(
-            {'href': href, 'type': 'direct_link', 'element': link})
-
-    # Check for 'Done' message using the constant
-    done_message = await page.query_selector(f'div:has-text("{DONE_MESSAGE_TEXT}")')
-    if done_message:
-      log(f"'{DONE_MESSAGE_TEXT}' message found, stopping scroll.")
-      done_message_found = True
-      break
+            {'href': href, 'type': 'direct_link', 'element': link})    # Check for 'Done' message using the constant - look only within the chat viewport
+    chat_viewport = await page.query_selector('[data-testid="DmActivityViewport"]')
+    if chat_viewport:
+      done_message = await chat_viewport.query_selector(f'div:has-text("{DONE_MESSAGE_TEXT}")')
+      if done_message:
+        log(f"'{DONE_MESSAGE_TEXT}' message found in chat, stopping scroll.")
+        done_message_found = True
+        break
 
     # Safety check to prevent infinite scrolling
     if scroll_count >= 50:

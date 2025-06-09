@@ -145,7 +145,7 @@ async def run_script():
       page = await context.new_page()
 
       # Navigate to the profile page
-      await page.goto('https://x.com/asif_abulkalam')
+      await page.goto('https://x.com/AbulkalamA91968')
       print("Navigated to profile page.")
 
       # Undo all retweets
