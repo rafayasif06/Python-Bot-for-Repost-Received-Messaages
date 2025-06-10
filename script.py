@@ -5,6 +5,7 @@ import sys
 import json
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import urlparse
 from playwright.async_api import async_playwright
 import logging
 
@@ -286,6 +287,248 @@ async def retweet_post(page):
     return "failed"
 
 
+def extract_status_signature(href):
+  """Extract the status signature from a Twitter/X URL for duplicate detection.
+
+  Args:
+    href: The URL string to extract signature from
+
+  Returns:
+    A tuple (account_name, status_id) or None if not a valid status URL
+  """
+  if not href:
+    return None
+
+  # Handle both full URLs and relative paths
+  if href.startswith('http'):
+    # Extract path from full URL
+    try:
+      parsed = urlparse(href)
+      path = parsed.path
+    except:
+      return None
+  else:
+    path = href
+
+  # Match pattern: /account_name/status/status_id (with optional additional parts)
+  match = re.match(r'/([^/]+)/status/(\d+)', path)
+  if match:
+    account_name = match.group(1)
+    status_id = match.group(2)
+    return (account_name, status_id)
+
+  return None
+
+
+def filter_duplicate_direct_links(captured_links):
+  """Filter out duplicate direct links based on status signature.
+
+  For links with the same account_name/status/status_id pattern, keep only the first occurrence.
+  """
+  seen_signatures = set()
+  filtered_links = []
+  removed_count = 0
+
+  for link_item in captured_links:
+    if link_item['type'] == 'direct_link':
+      href = link_item.get('href')
+      signature = extract_status_signature(href)
+
+      if signature:
+        if signature not in seen_signatures:
+          seen_signatures.add(signature)
+          filtered_links.append(link_item)
+        else:
+          removed_count += 1
+          log(
+            f"Removing duplicate link: {href} (signature: {signature[0]}/status/{signature[1]})")
+      else:
+        # Keep non-status links as they are
+        filtered_links.append(link_item)
+    else:
+      # Keep embedded tweets and other types as they are
+      filtered_links.append(link_item)
+
+  if removed_count > 0:
+    log(f"Filtered out {removed_count} duplicate direct links")
+  return filtered_links
+
+
+async def extract_embedded_signature(page, element):
+  """Extract a unique signature from an embedded tweet element for duplicate detection.
+
+  Args:
+    page: The Playwright page object
+    element: The embedded tweet element
+
+  Returns:
+    A string signature or None if extraction fails
+  """
+  try:
+    # Try to extract unique identifiers from the element
+    signature_parts = []
+
+    # Get text content as a signature component
+    text_content = await page.evaluate('(element) => element.textContent', element)
+    if text_content:
+      # Use first 100 characters and clean whitespace for signature
+      clean_text = ' '.join(text_content.strip().split())[:100]
+      signature_parts.append(clean_text)
+
+    # Get any data attributes that might be unique
+    element_html = await page.evaluate('(element) => element.outerHTML', element)
+
+    # Look for tweet-specific patterns in the HTML
+    import re
+
+    # Extract any tweet IDs or account references from the HTML
+    tweet_id_match = re.search(r'status/(\d+)', element_html)
+    if tweet_id_match:
+      signature_parts.append(f"status_{tweet_id_match.group(1)}")
+
+    account_match = re.search(r'/([^/\s"]+)/status/', element_html)
+    if account_match:
+      signature_parts.append(f"account_{account_match.group(1)}")
+
+    # If we have signature parts, join them
+    if signature_parts:
+      return '|'.join(signature_parts)
+
+    # Fallback: use element position and some attributes
+    bounding_box = await element.bounding_box()
+    if bounding_box:
+      signature_parts.append(
+        f"pos_{int(bounding_box['x'])}_{int(bounding_box['y'])}")
+
+    if signature_parts:
+      return '|'.join(signature_parts)
+
+    return None
+
+  except Exception as e:
+    log(f"Error extracting embedded signature: {e}")
+    return None
+
+
+def filter_duplicate_embedded_links(captured_links):
+  """Filter out duplicate embedded links based on element signatures.
+
+  For embedded tweets with similar signatures, keep only the first occurrence.
+  """
+  seen_signatures = set()
+  filtered_links = []
+  removed_count = 0
+
+  for link_item in captured_links:
+    if link_item['type'] == 'embedded':
+      # We'll add this in the main function
+      signature = link_item.get('signature')
+
+      if signature:
+        if signature not in seen_signatures:
+          seen_signatures.add(signature)
+          filtered_links.append(link_item)
+        else:
+          removed_count += 1
+          log(
+            f"Removing duplicate embedded tweet with signature: {signature[:50]}...")
+      else:
+        # Keep tweets without signatures
+        filtered_links.append(link_item)
+    else:
+      # Keep direct links and other types as they are
+      filtered_links.append(link_item)
+
+  if removed_count > 0:
+    log(f"Filtered out {removed_count} duplicate embedded links")
+  return filtered_links
+
+
+async def filter_duplicate_embedded_by_position(page, captured_links):
+  """Filter out duplicate embedded links based on element position.
+
+  This is a simpler approach that compares element positions to detect duplicates.
+  """
+  position_signatures = set()
+  filtered_links = []
+  removed_count = 0
+
+  for link_item in captured_links:
+    if link_item['type'] == 'embedded':
+      try:
+        element = link_item['element']
+        bounding_box = await element.bounding_box()
+
+        if bounding_box:
+          # Create position signature with some tolerance for minor position differences
+          x = round(bounding_box['x'] / 10) * 10  # Round to nearest 10 pixels
+          y = round(bounding_box['y'] / 10) * 10
+          width = round(bounding_box['width'] / 10) * 10
+          height = round(bounding_box['height'] / 10) * 10
+
+          position_sig = f"{x}_{y}_{width}_{height}"
+
+          if position_sig not in position_signatures:
+            position_signatures.add(position_sig)
+            filtered_links.append(link_item)
+          else:
+            removed_count += 1
+            log(
+              f"Removing duplicate embedded tweet at position: {position_sig}")
+        else:
+          # Keep tweets without bounding box
+          filtered_links.append(link_item)
+      except Exception as e:
+        log(f"Error checking embedded element position: {e}")
+        # Keep the element if we can't check its position
+        filtered_links.append(link_item)
+    else:
+      # Keep direct links and other types as they are
+      filtered_links.append(link_item)
+
+  if removed_count > 0:
+    log(f"Filtered out {removed_count} duplicate embedded links by position")
+  return filtered_links
+
+
+def log_captured_links_summary(captured_links, chat_index):
+  """Log all captured links in a user-friendly format before processing."""
+  if not captured_links:
+    log(f"\n=== No links found in Chat {chat_index + 1} ===")
+    return
+
+  log(f"\n=== Links Found in Chat {chat_index + 1} ===")
+  log(f"Total links captured: {len(captured_links)}")
+
+  # Separate by type
+  direct_links = [
+    item for item in captured_links if item['type'] == 'direct_link']
+  embedded_tweets = [
+    item for item in captured_links if item['type'] == 'embedded']
+
+  log(f"Direct links: {len(direct_links)}")
+  log(f"Embedded tweets: {len(embedded_tweets)}")
+
+  # Log direct links with details
+  if direct_links:
+    log(f"\n--- Direct Links ({len(direct_links)}) ---")
+    for i, link_item in enumerate(direct_links, 1):
+      href = link_item.get('href', 'No URL')
+      signature = extract_status_signature(href)
+      if signature:
+        log(f"{i}. {href} (Account: {signature[0]}, Status: {signature[1]})")
+      else:
+        log(f"{i}. {href} (Non-status link)")
+
+  # Log embedded tweets
+  if embedded_tweets:
+    log(f"\n--- Embedded Tweets ({len(embedded_tweets)}) ---")
+    for i, tweet_item in enumerate(embedded_tweets, 1):
+      log(f"{i}. Embedded tweet element (requires click to get URL)")
+
+  log(f"\n--- Starting to process all {len(captured_links)} links ---")
+
+
 async def scroll_and_capture_links(page):
   """Scroll incrementally and capture links until 'Done' message is found or top of chat is reached."""
   log("Starting incremental scrolling to capture links...")
@@ -318,16 +561,18 @@ async def scroll_and_capture_links(page):
     previous_scroll_top = current_scroll_top
 
     # Capture links after every configured number of scrolls or if we've found the done message
+    # Capture embedded tweets (divs with role="link" and specific classnames)
     if scroll_count % SCROLLS_COUNT_FOR_EACH_CAPTURE == 0:
-      # Capture embedded tweets (divs with role="link" and specific classnames)
       embedded_elements = await page.query_selector_all(embedded_selector)
       log(
         f"Captured {len(embedded_elements)} embedded tweet elements during scroll {scroll_count}.")
 
       for element in embedded_elements:
         if element not in [item['element'] for item in captured_links]:
+          # Extract signature for duplicate detection
+          signature = await extract_embedded_signature(page, element)
           captured_links.append(
-            {'href': None, 'type': 'embedded', 'element': element})
+            {'href': None, 'type': 'embedded', 'element': element, 'signature': signature})
 
       # Capture direct Twitter/X links (a elements with role="link" and href containing "/status/")
       direct_link_elements = await page.query_selector_all(link_selector)
@@ -351,15 +596,15 @@ async def scroll_and_capture_links(page):
     if scroll_count >= 50:
       log("Reached maximum scroll limit (50), stopping scroll.")
       break
-
   # Perform a final capture to ensure we get all links
   log("Performing final capture after scrolling completed...")
   embedded_elements_final = await page.query_selector_all(embedded_selector)
   for element in embedded_elements_final:
     if element not in [item['element'] for item in captured_links]:
+      # Extract signature for duplicate detection
+      signature = await extract_embedded_signature(page, element)
       captured_links.append(
-        {'href': None, 'type': 'embedded', 'element': element})
-
+        {'href': None, 'type': 'embedded', 'element': element, 'signature': signature})
   links_final = await page.query_selector_all(link_selector)
   for link in links_final:
     href = await link.get_attribute('href')
@@ -367,8 +612,20 @@ async def scroll_and_capture_links(page):
       captured_links.append(
         {'href': href, 'type': 'direct_link', 'element': link})
 
+  # Filter out duplicate direct links based on status signature
+  original_count = len(captured_links)
+  captured_links = filter_duplicate_direct_links(captured_links)
+
+  # Filter out duplicate embedded links based on element signatures
+  captured_links = filter_duplicate_embedded_links(captured_links)
+
+  # Alternative: Use position-based filtering for embedded tweets
+  # captured_links = await filter_duplicate_embedded_by_position(page, captured_links)
+
+  final_count = len(captured_links)
+
   log(
-    f"Captured a total of {len(captured_links)} unique links after {scroll_count} scrolls.")
+    f"Captured a total of {original_count} links, filtered to {final_count} unique links after {scroll_count} scrolls.")
   return captured_links
 
 
@@ -571,12 +828,11 @@ async def open_chat_by_index(page, chat_index):
     message_id_match = re.search(r'/messages/(\d+)', chat_html)
     if message_id_match:
       message_id = message_id_match.group(1)
-      log(f"Found message ID: {message_id}")
-
       # Navigate to the specific chat using the ID
+      log(f"Found message ID: {message_id}")
       await page.goto(f"https://x.com/messages/{message_id}")
       log(f"Opened chat using extracted message ID: {message_id}")
-      await asyncio.sleep(2)
+      await asyncio.sleep(5)
     else:
       # Fallback to direct clicking if we couldn't find an ID
       try:
@@ -587,7 +843,7 @@ async def open_chat_by_index(page, chat_index):
 
         await main_conversation.click()
         log("Opened chat by direct click")
-        await asyncio.sleep(2)
+        await asyncio.sleep(5)
       except Exception as e:
         log(f"Click failed: {e}")
         return False
@@ -611,9 +867,8 @@ async def process_chat_tweets(context, page, chat_index):
       return 0
 
     # Wait for chat to load with a reasonable delay
-    await asyncio.sleep(5)
-
     # Use scroll_and_capture_links to find Twitter posts in the chat
+    await asyncio.sleep(8)
     post_elements = await scroll_and_capture_links(page)
     log(f"Found {len(post_elements)} tweet(s) in chat {chat_index + 1}")
 
@@ -624,6 +879,9 @@ async def process_chat_tweets(context, page, chat_index):
       post_elements = await scroll_and_capture_links(page)
       log(
         f"After refresh: found {len(post_elements)} tweet(s) in chat {chat_index + 1}")
+
+    # Log all captured links in a user-friendly format before processing
+    log_captured_links_summary(post_elements, chat_index)
 
     # Process each Twitter post
     tweets_retweeted = 0
@@ -828,7 +1086,7 @@ async def run_script():
                 for i in range(chat_count):
                   if i > 0:
                     await page.goto('https://x.com/messages')
-                    await asyncio.sleep(3)
+                    await asyncio.sleep(5)
                   tweets_opened = await process_chat_tweets(context, page, i)
                   total_tweets_opened += tweets_opened
                 log(

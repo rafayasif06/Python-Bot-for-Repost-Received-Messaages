@@ -2,3 +2,4 @@ venv
 .vscode
 test.html
 logs
+__pycache__
