@@ -137,14 +137,24 @@ def parse_cookies_from_file(file_path):
   return cookies
 
 
-async def retweet_post(page):
+async def retweet_post(page, retry_count=0, max_retries=3):
   """Retweets a post that's open in the current page."""
   try:
-    log("Attempting to retweet the post...")
+    if retry_count > 0:
+      log(f"Retrying retweet attempt {retry_count + 1}/{max_retries + 1}...")
+      # Reload page and wait longer on retry with increasing wait times
+      log("Reloading page before retry...")
+      await page.reload(wait_until="domcontentloaded")
+      # Increasing wait times: 5s, 8s, 12s for retries 1, 2, 3
+      wait_time = 5 + (retry_count * 3)
+      log(f"Waiting {wait_time} seconds after page reload...")
+      await asyncio.sleep(wait_time)
+    else:
+      log("Attempting to retweet the post...")
+      # Wait a moment to make sure the page is fully loaded
+      await asyncio.sleep(3)
 
-    # Wait a moment to make sure the page is fully loaded
     # Check if the tweet is already retweeted by looking for unretweet data-testid
-    await asyncio.sleep(3)
     try:
       unretweet_exists = await page.get_by_test_id("unretweet").count() > 0
 
@@ -161,9 +171,8 @@ async def retweet_post(page):
         log("Tweet is already retweeted (confirmed by text), skipping...")
         return "already_retweeted"
     except Exception as e:
+      # Try multiple selectors to find the retweet button
       log(f"Error checking if tweet is already retweeted: {e}")
-
-    # Try multiple selectors to find the retweet button
     retweet_button_selectors = [
         'button[data-testid="retweet"]',
         'button[aria-label*="repost"]',
@@ -180,16 +189,19 @@ async def retweet_post(page):
     for selector in retweet_button_selectors:
       try:
         log(f"Trying to find retweet button with selector: {selector}")
-        button = await page.wait_for_selector(selector, timeout=5000)
+        # Increase timeout for retries
+        timeout = 5000 + (retry_count * 2000)  # 5s, 7s, 9s, 11s
+        button = await page.wait_for_selector(selector, timeout=timeout)
         if button:
           retweet_button = button
           log(f"Found retweet button with selector: {selector}")
           break
       except Exception as e:
         log(f"Selector {selector} failed: {e}")
-        if not retweet_button:
-          log("Could not find retweet button with any selector")
+        continue
 
+    if not retweet_button:
+      log("Could not find retweet button with any selector")
       # Last resort: try to find any buttons that might be the retweet button
       try:
         log("Trying to find any button that might be the retweet button...")
@@ -208,17 +220,17 @@ async def retweet_post(page):
       except Exception as e:
         log(f"Last resort button search failed: {e}")
 
-      if not retweet_button:
-        return "failed"
+    if not retweet_button:
+      log("Could not find retweet button with any method")
+      return "failed"
 
     # Click the retweet button
     await retweet_button.click()
     log("Clicked retweet button")
 
     # Wait for the retweet menu to appear
-    await asyncio.sleep(1.5)
-
     # Try multiple selectors for the retweet/repost option in the menu
+    await asyncio.sleep(1.5)
     retweet_option_selectors = [
         'div[data-testid="retweetConfirm"]',
         'div[role="menuitem"][data-testid="retweet"]',
@@ -235,7 +247,9 @@ async def retweet_post(page):
     for selector in retweet_option_selectors:
       try:
         log(f"Trying to find retweet option with selector: {selector}")
-        option = await page.wait_for_selector(selector, timeout=5000)
+        # Increase timeout for retries
+        timeout = 5000 + (retry_count * 2000)  # 5s, 7s, 9s, 11s
+        option = await page.wait_for_selector(selector, timeout=timeout)
         if option:
           retweet_option = option
           log(f"Found retweet option with selector: {selector}")
@@ -244,7 +258,7 @@ async def retweet_post(page):
         log(f"Selector {selector} failed: {e}")
 
     if not retweet_option:
-
+      log("Could not find retweet option with primary selectors")
       # Last resort: try to find any menu item that might be the retweet option
       try:
         log("Trying to find any menu item that might be the retweet option...")
@@ -264,15 +278,12 @@ async def retweet_post(page):
 
       if not retweet_option:
         log("Could not find retweet option in menu")
-        return "failed"
-
-    # Click the retweet option
+        return "failed"    # Click the retweet option
     await retweet_option.click()
     # Wait a moment for the retweet to complete
     log("Clicked retweet option, post has been retweeted")
-    await asyncio.sleep(2)
-
     # Check for confirmation or success indicator if available
+    await asyncio.sleep(2)
     try:
       confirmation = await page.wait_for_selector('div[role="alert"], div[data-testid="toast"]', timeout=4000)
       if confirmation:
@@ -284,7 +295,18 @@ async def retweet_post(page):
     return True
   except Exception as e:
     log(f"Error retweeting post: {e}")
-    return "failed"
+
+    # Retry logic for failed attempts with increased retries
+    if retry_count < max_retries:
+      # Increasing wait times: 3s, 5s, 8s for retries 1, 2, 3
+      wait_time = 3 + (retry_count * 2)
+      log(
+        f"Retrying retweet after error (attempt {retry_count + 2}/{max_retries + 1}) in {wait_time} seconds...")
+      await asyncio.sleep(wait_time)
+      return await retweet_post(page, retry_count + 1, max_retries)
+    else:
+      log(f"Failed to retweet after {max_retries + 1} attempts")
+      return "failed"
 
 
 def extract_status_signature(href):
@@ -558,32 +580,43 @@ async def scroll_and_capture_links(page):
     await page.evaluate("document.querySelector('[data-testid=\"DmActivityViewport\"]').scrollBy(0, -window.innerHeight)")
     # Wait for new content to load    # Update previous scroll position
     await asyncio.sleep(2)
-    previous_scroll_top = current_scroll_top
-
     # Capture links after every configured number of scrolls or if we've found the done message
+    previous_scroll_top = current_scroll_top
     # Capture embedded tweets (divs with role="link" and specific classnames)
     if scroll_count % SCROLLS_COUNT_FOR_EACH_CAPTURE == 0:
+      # Get existing elements to avoid redundant processing
+      existing_embedded_elements = [item['element']
+                                    for item in captured_links if item['type'] == 'embedded']
+      existing_direct_hrefs = [
+        item['href'] for item in captured_links if item['type'] == 'direct_link' and item['href']]
+
       embedded_elements = await page.query_selector_all(embedded_selector)
       log(
-        f"Captured {len(embedded_elements)} embedded tweet elements during scroll {scroll_count}.")
+        f"Found {len(embedded_elements)} embedded tweet elements during scroll {scroll_count}.")
 
+      new_embedded_count = 0
       for element in embedded_elements:
-        if element not in [item['element'] for item in captured_links]:
+        if element not in existing_embedded_elements:
           # Extract signature for duplicate detection
           signature = await extract_embedded_signature(page, element)
           captured_links.append(
             {'href': None, 'type': 'embedded', 'element': element, 'signature': signature})
+          new_embedded_count += 1
 
       # Capture direct Twitter/X links (a elements with role="link" and href containing "/status/")
       direct_link_elements = await page.query_selector_all(link_selector)
-      log(
-        f"Captured {len(direct_link_elements)} direct Twitter link elements during scroll {scroll_count}.")
+      log(f"Found {len(direct_link_elements)} direct Twitter link elements during scroll {scroll_count}.")
 
+      new_direct_count = 0
       for link in direct_link_elements:
         href = await link.get_attribute('href')
-        if href and href not in [item['href'] for item in captured_links]:
+        if href and href not in existing_direct_hrefs:
           captured_links.append(
-            {'href': href, 'type': 'direct_link', 'element': link})    # Check for 'Done' message using the constant - look only within the chat viewport
+            {'href': href, 'type': 'direct_link', 'element': link})
+          new_direct_count += 1
+
+      log(f"Captured {new_embedded_count} new embedded and {new_direct_count} new direct links during scroll {scroll_count}.")
+    # Check for 'Done' message using the constant - look only within the chat viewport
     chat_viewport = await page.query_selector('[data-testid="DmActivityViewport"]')
     if chat_viewport:
       done_message = await chat_viewport.query_selector(f'div:has-text("{DONE_MESSAGE_TEXT}")')
@@ -596,21 +629,37 @@ async def scroll_and_capture_links(page):
     if scroll_count >= 50:
       log("Reached maximum scroll limit (50), stopping scroll.")
       break
+
   # Perform a final capture to ensure we get all links
   log("Performing final capture after scrolling completed...")
+
+  # Get existing elements to avoid redundant processing
+  existing_elements = [item['element']
+                       for item in captured_links if item['type'] == 'embedded']
+  existing_hrefs = [item['href']
+                    for item in captured_links if item['type'] == 'direct_link' and item['href']]
+
   embedded_elements_final = await page.query_selector_all(embedded_selector)
+  new_embedded_count = 0
   for element in embedded_elements_final:
-    if element not in [item['element'] for item in captured_links]:
-      # Extract signature for duplicate detection
+    if element not in existing_elements:
+      # Extract signature for duplicate detection (only for truly new elements)
       signature = await extract_embedded_signature(page, element)
       captured_links.append(
         {'href': None, 'type': 'embedded', 'element': element, 'signature': signature})
+      new_embedded_count += 1
+
   links_final = await page.query_selector_all(link_selector)
+  new_direct_count = 0
   for link in links_final:
     href = await link.get_attribute('href')
-    if href and href not in [item['href'] for item in captured_links]:
+    if href and href not in existing_hrefs:
       captured_links.append(
         {'href': href, 'type': 'direct_link', 'element': link})
+      new_direct_count += 1
+
+  log(
+    f"Final capture added {new_embedded_count} new embedded elements and {new_direct_count} new direct links.")
 
   # Filter out duplicate direct links based on status signature
   original_count = len(captured_links)
@@ -638,59 +687,83 @@ async def open_tweet_in_new_tab(context, page, post_item, tweet_index):
     log(
       f"Processing Twitter post at index {tweet_index} (type: {element_type})...")
     url_page = None
-    max_retries = 3
+    max_retries = 3  # Increased to 3 retries for better reliability
 
     # Store original URL to detect navigation
-    original_url = page.url
-    # Handle direct links differently from embedded tweets
+    original_url = page.url    # Handle direct links differently from embedded tweets
     log(f"Original URL before clicking: {original_url}")
     if element_type == 'direct_link':
-      try:
-        href = post_item.get('href')
-        if href:
-          # Ensure it's a full URL
-          if href.startswith('/'):
-            tweet_url = f"https://x.com{href}"
+      # Retry logic for direct links
+      for retry_attempt in range(max_retries + 1):
+        try:
+          if retry_attempt > 0:
+            log(
+              f"Retrying direct link processing (attempt {retry_attempt + 1}/{max_retries + 1})...")
+            # Increasing wait times: 3s, 5s, 8s for retries
+            wait_time = 3 + (retry_attempt * 2)
+            await asyncio.sleep(wait_time)
+
+          href = post_item.get('href')
+          if href:
+            # Ensure it's a full URL
+            if href.startswith('/'):
+              tweet_url = f"https://x.com{href}"
+            else:
+              tweet_url = href
+
+            log(f"Opening direct link: {tweet_url}")
+
+            # Open in new tab
+            url_page = await context.new_page()
+            await url_page.goto(tweet_url, wait_until="domcontentloaded")
+            await asyncio.sleep(2)
+
+            # Try to retweet (this function already has its own retry logic)
+            retweet_result = await retweet_post(url_page)
+
+            if url_page:
+              await url_page.close()
+              url_page = None
+
+            if retweet_result == "already_retweeted":
+              log(f"Tweet already retweeted (index {tweet_index})")
+              return "already_retweeted"
+            elif retweet_result == True:
+              log(f"Successfully retweeted post (index {tweet_index})")
+              return "retweeted"
+            elif retweet_result == "failed" and retry_attempt < max_retries:
+              log(f"Retweet failed, will retry direct link processing...")
+              continue
+            else:
+              log(f"Failed to retweet post (index {tweet_index})")
+              return "failed"
           else:
-            tweet_url = href
+            log(
+              f"Could not get href attribute for direct link at index {tweet_index}")
+            return "failed"
 
-          log(f"Opening direct link: {tweet_url}")
-
-          # Open in new tab
-          url_page = await context.new_page()
-          await url_page.goto(tweet_url, wait_until="domcontentloaded")
-          await asyncio.sleep(2)
-
-          # Try to retweet
-          retweet_result = await retweet_post(url_page)
-
+        except Exception as e:
+          log(f"Error handling direct link (attempt {retry_attempt + 1}): {e}")
           if url_page:
             await url_page.close()
-
-          if retweet_result == "already_retweeted":
-            log(f"Tweet already retweeted (index {tweet_index})")
-            return "already_retweeted"
-          elif retweet_result == True:
-            log(f"Successfully retweeted post (index {tweet_index})")
-            return "retweeted"
-          else:
-            log(f"Failed to retweet post (index {tweet_index})")
+            url_page = None
+          if retry_attempt >= max_retries:
             return "failed"
+          continue    # Handle embedded tweets with enhanced retry logic
+    for retry in range(max_retries + 1):  # Changed to max_retries + 1 for consistency
+      try:
+        if retry > 0:
+          log(
+            f"Retrying embedded tweet processing (attempt {retry + 1}/{max_retries + 1})...")
+          # Reload page before retry with increasing wait times
+          log("Reloading page before retry...")
+          await page.goto(original_url)
+          wait_time = 5 + (retry * 3)  # 5s, 8s, 11s for retries
+          log(f"Waiting {wait_time} seconds after page reload...")
+          await asyncio.sleep(wait_time)
         else:
           log(
-            f"Could not get href attribute for direct link at index {tweet_index}")
-          return "failed"
-      except Exception as e:
-        log(f"Error handling direct link: {e}")
-        if 'url_page' in locals() and url_page:
-          await url_page.close()
-        return "failed"
-
-    # Handle embedded tweets (original logic)
-    for retry in range(max_retries):
-      try:
-        log(
-          f"Attempt #{retry+1} to find and click embedded tweet elements...")
+            f"Attempt #{retry+1} to find and click embedded tweet elements...")
 
         # First, ensure we're on the messages page
         if not page.url.startswith("https://x.com/messages"):
@@ -752,11 +825,11 @@ async def open_tweet_in_new_tab(context, page, post_item, tweet_index):
             # Open in new tab
             url_page = await context.new_page()
             await url_page.goto(current_url, wait_until="domcontentloaded")
+            await asyncio.sleep(2)            # Return to messages page
+            await page.goto(original_url)
             await asyncio.sleep(2)
 
-            # Return to messages page
-            await page.goto(original_url)
-            await asyncio.sleep(2)            # Try to retweet
+            # Try to retweet
             retweet_result = await retweet_post(url_page)
 
             if url_page:
@@ -773,12 +846,12 @@ async def open_tweet_in_new_tab(context, page, post_item, tweet_index):
               return "failed"
           else:
             log("Click didn't navigate to a tweet page")
+            # Continue to next retry if available
+            if retry < max_retries:
+              continue
 
-        # If no click worked or we didn't navigate to a status page, try a different approach on next retry
-        if retry < max_retries - 1:
-          log(f"Retry {retry+1} failed, reloading page for next attempt...")
-          await page.goto(original_url)  # Go back to original page
-          await asyncio.sleep(5)  # Longer wait after reload
+        # If no click worked or we didn't navigate to a status page, continue to next retry
+        # The enhanced retry logic with page reload is already handled at the top of the loop
 
       except Exception as e:
         log(f"Error on attempt {retry+1}: {e}")
@@ -786,24 +859,18 @@ async def open_tweet_in_new_tab(context, page, post_item, tweet_index):
           await url_page.close()
           url_page = None
 
-        # On error, reload the page before next retry
-        if retry < max_retries - 1:
-          log(f"Error during attempt {retry+1}, reloading page...")
-          try:
-            await page.goto(original_url)
-            await asyncio.sleep(5)
-          except Exception:
-            pass
+        # Continue to next retry if available (page reload handled at top of loop)
+        if retry >= max_retries:
+          break
 
     log(
-      f"Could not process embedded tweet {tweet_index} after {max_retries} attempts")
-    return False
-
+      f"Could not process embedded tweet {tweet_index} after {max_retries + 1} attempts")
+    return "failed"
   except Exception as e:
     log(f"Failed to process Twitter post {tweet_index}: {e}")
     if url_page:
       await url_page.close()
-    return False
+    return "failed"
 
 
 async def open_chat_by_index(page, chat_index):
@@ -854,17 +921,31 @@ async def open_chat_by_index(page, chat_index):
     return False
 
 
-async def process_chat_tweets(context, page, chat_index):
+async def process_chat_tweets(context, page, chat_index, retry_count=0, max_retries=1):
   """Process all tweets in a single chat."""
   try:
-    log(f"\n--- Processing Chat {chat_index + 1} ---")
+    if retry_count > 0:
+      log(
+        f"\n--- Retrying Chat {chat_index + 1} (Attempt {retry_count + 1}) ---")
+    else:
+      log(f"\n--- Processing Chat {chat_index + 1} ---")
 
     # Open the chat
     chat_opened = await open_chat_by_index(page, chat_index)
 
     if not chat_opened:
       log(f"Failed to open chat {chat_index + 1}")
-      return 0
+
+      # Retry logic for failed chat opening
+      if retry_count < max_retries:
+        log(
+          f"Retrying chat {chat_index + 1} after failed opening (attempt {retry_count + 2}/{max_retries + 1})...")
+        await asyncio.sleep(5)
+        return await process_chat_tweets(context, page, chat_index, retry_count + 1, max_retries)
+      else:
+        log(
+          f"Failed to open chat {chat_index + 1} after {max_retries + 1} attempts")
+        return 0
 
     # Wait for chat to load with a reasonable delay
     # Use scroll_and_capture_links to find Twitter posts in the chat
@@ -880,10 +961,15 @@ async def process_chat_tweets(context, page, chat_index):
       log(
         f"After refresh: found {len(post_elements)} tweet(s) in chat {chat_index + 1}")
 
-    # Log all captured links in a user-friendly format before processing
-    log_captured_links_summary(post_elements, chat_index)
+      # If still no tweets and this isn't a retry, try once more
+      if len(post_elements) == 0 and retry_count < max_retries:
+        log(f"Still no tweets found in chat {chat_index + 1}, retrying...")
+        await asyncio.sleep(3)
+        return await process_chat_tweets(context, page, chat_index, retry_count + 1, max_retries)
 
+    # Log all captured links in a user-friendly format before processing
     # Process each Twitter post
+    log_captured_links_summary(post_elements, chat_index)
     tweets_retweeted = 0
     tweets_already_retweeted = 0
     tweets_failed = 0
@@ -907,7 +993,9 @@ async def process_chat_tweets(context, page, chat_index):
       else:
         tweets_failed += 1
 
-      await asyncio.sleep(2)    # Display summary for this chat
+      await asyncio.sleep(2)
+
+    # Display summary for this chat
     total_processed = tweets_retweeted + tweets_already_retweeted + tweets_failed
     log(f"\n=== Chat {chat_index + 1} Summary ===")
     log(f"Total tweets found: {len(post_elements)}")
@@ -930,7 +1018,18 @@ async def process_chat_tweets(context, page, chat_index):
     return tweets_retweeted
   except Exception as e:
     log(f"Error processing chat {chat_index + 1}: {e}")
-    return 0
+
+    # Retry logic for general processing errors
+    if retry_count < max_retries:
+      log(
+        f"Retrying chat {chat_index + 1} after error (attempt {retry_count + 2}/{max_retries + 1})...")
+      await asyncio.sleep(5)
+      return await process_chat_tweets(context, page, chat_index, retry_count + 1, max_retries)
+    else:
+      log(
+        f"Failed to process chat {chat_index + 1} after {max_retries + 1} attempts")
+      return 0
+      return 0
 
 
 async def find_chat_elements(page):
